@@ -1,43 +1,27 @@
 name: Run Project
 
-# ═══════════════════════════════════════════════════════════════════════
-# 总入口 · 按参数派发到对应的项目 workflow
+# 总入口：把参数解析成项目 workflow，再派发到它。不做任何具体任务。
 #
-# 架构：
-#     run-project.yml        ← 本文件，只做调度，不做具体任务
-#     glados_checkin.yml     ← 项目本体（每个项目一个文件）
+# 约定：.github/workflows/ 下**不以 run- 开头**的 .yml 即项目，
+#       文件名（去扩展名）即项目名。run- 前缀保留给基础设施。
+#       secrets / Environment 一律由各项目 workflow 自己挂载。
 #
-# 约定：
-#     .github/workflows/ 下**不以 `run-` 开头**的 .yml 都被视为可调度项目
-#     workflow 文件名（去掉扩展名）就是项目名
-#     `run-` 前缀保留给基础设施（如本文件 run-project.yml）
-#
-# 外部触发（curl / cron-job.org / 中转服务）：
-#   POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/run-project.yml/dispatches
-#   Authorization: Bearer <PAT，需 Actions: Read and write>
-#   Accept: application/vnd.github+json
-#   Content-Type: application/json
-#
+# 外部触发：
+#   POST /repos/<owner>/<repo>/actions/workflows/run-project.yml/dispatches
 #   {"ref":"main","inputs":{"project":"glados_checkin"}}
 #
-#   项目名匹配时大小写、- / _ 差异都会被归一化，以下写法等价：
-#       glados_checkin / glados-checkin / GLADOS_CHECKIN / glados_checkin.yml
-#
-# 为什么用「派发」而不是 `uses:` 直接调用：
-#     jobs.<job_id>.uses 不支持表达式，无法动态选择被调用的 workflow 文件。
-#     派发能动态选择，代价是目标会成为一个独立的 workflow run。
-#     若要单 run 串联执行，需改为静态的 workflow_call 映射表。
-# ═══════════════════════════════════════════════════════════════════════
+# 为什么用派发而不是 uses: 直接调用：
+#   jobs.<job_id>.uses 不支持表达式，无法动态选择被调用的 workflow 文件。
 
 on:
   workflow_dispatch:
     inputs:
       project:
-        description: '要运行的项目，如 glados_checkin（对应 .github/workflows/glados_checkin.yml）'
+        description: '项目名，如 glados_checkin'
         required: true
         type: string
       ref:
-        description: '在哪个分支或标签上运行，留空 = 当前分支'
+        description: '分支或标签，留空 = 当前分支'
         required: false
         default: ''
         type: string
@@ -46,128 +30,74 @@ permissions:
   contents: read
   actions: write   # 派发其他 workflow 所必需
 
-concurrency:
-  group: run-project
-  cancel-in-progress: false
-
 jobs:
   dispatch:
-    name: Dispatch
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      # ── 1. 把输入的项目名解析成真实的 workflow 文件名 ──
-      - name: Resolve target workflow
-        id: resolve
+      - name: Resolve and dispatch
         shell: bash
         env:
-          # 用户输入经 env 传入，避免被直接拼接进 shell 脚本
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # workflow_dispatch 是「GITHUB_TOKEN 不触发新 run」的例外
           PROJECT_RAW: ${{ inputs.project }}
+          REF_INPUT: ${{ inputs.ref }}
         run: |
           set -euo pipefail
 
-          # 归一化：转小写 + 非字母数字统一成下划线 + 去掉首尾下划线
-          norm() {
-            printf '%s' "$1" | tr 'A-Z' 'a-z' \
-              | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
-          }
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          hdr=(-H "Authorization: Bearer ${GH_TOKEN}"
+               -H "Accept: application/vnd.github+json"
+               -H "X-GitHub-Api-Version: 2026-03-10")
+          ref="${REF_INPUT:-${GITHUB_REF_NAME}}"
 
-          # 允许传 glados_checkin.yml / glados_checkin.yaml
-          raw="${PROJECT_RAW%.yml}"
-          raw="${raw%.yaml}"
-          want=$(norm "$raw")
+          # 归一化：glados-checkin / GLADOS_CHECKIN / glados_checkin.yml -> glados_checkin
+          norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'; }
+          want=$(norm "${PROJECT_RAW%.yml}")
 
-          available=""
-          matched=""
+          # 可用项目 = 仓库已注册的 workflow 中，文件名不以 run- 开头的
+          paths=$(curl -s "${hdr[@]}" "${api}/actions/workflows?per_page=100" | jq -r '.workflows[].path')
+          if [ -z "$paths" ]; then
+            echo "::error::无法读取 workflow 列表，请确认 job 上有 permissions: actions: write"
+            exit 1
+          fi
 
-          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-            [ -f "$f" ] || continue
-            file=$(basename "$f")
-
-            # `run-` 前缀 = 基础设施，不作为可调度项目
+          matched=""; available=""
+          while read -r path; do
+            [ -n "$path" ] || continue
+            file="${path##*/}"
             case "$file" in run-*) continue ;; esac
-
-            stem="${file%.yml}"
-            stem="${stem%.yaml}"
-
+            stem="${file%.yml}"; stem="${stem%.yaml}"
             available="${available}${available:+, }${stem}"
-
-            if [ "$(norm "$stem")" = "$want" ]; then
-              matched="$file"
-            fi
-          done
+            if [ "$(norm "$stem")" = "$want" ]; then matched="$file"; fi
+          done <<< "$paths"
 
           if [ -z "$matched" ]; then
             echo "::error::未找到项目 '$PROJECT_RAW'。可用项目：${available:-（无）}"
             exit 1
           fi
+          echo "→ $PROJECT_RAW ⇒ $matched (ref=$ref)"
 
-          echo "workflow=$matched" >> "$GITHUB_OUTPUT"
-          echo "→ 目标 workflow: $matched"
-
-          {
-            echo "## 总入口"
-            echo ""
-            echo "| 输入 | 归一化 | 命中 workflow |"
-            echo "|---|---|---|"
-            echo "| \`$PROJECT_RAW\` | \`$want\` | \`$matched\` |"
-            echo ""
-            echo "可用项目：${available:-（无）}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # ── 2. 调用 GitHub API 派发目标 workflow ──
-      - name: Dispatch target workflow
-        shell: bash
-        env:
-          # 使用仓库内置的 GITHUB_TOKEN 即可：
-          # workflow_dispatch 是「GITHUB_TOKEN 不触发新 run」规则的例外
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKFLOW_FILE: ${{ steps.resolve.outputs.workflow }}
-          REF_INPUT: ${{ inputs.ref }}
-        run: |
-          set -euo pipefail
-
-          ref="${REF_INPUT:-${GITHUB_REF_NAME}}"
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_FILE}/dispatches"
-
-          resp=$(curl -s -w '\n%{http_code}' \
-                   -X POST \
-                   -H "Authorization: Bearer ${GH_TOKEN}" \
-                   -H "Accept: application/vnd.github+json" \
-                   -H "X-GitHub-Api-Version: 2026-03-10" \
-                   "${api}" \
+          # 派发
+          code=$(curl -s -o resp.json -w '%{http_code}' -X POST "${hdr[@]}" \
+                   -H "Content-Type: application/json" \
+                   "${api}/actions/workflows/${matched}/dispatches" \
                    -d "{\"ref\":\"${ref}\",\"return_run_details\":true}")
 
-          code=$(printf '%s' "$resp" | tail -n 1)
-          body=$(printf '%s' "$resp" | sed '$d')
-
-          if [ "$code" != "204" ] && [ "$code" != "200" ]; then
-            echo "::error::派发失败（HTTP ${code}）"
-            printf '%s\n' "$body"
+          if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+            echo "::error::派发失败（HTTP $code）"
+            cat resp.json
             exit 1
           fi
 
-          run_url=""
-          if [ -n "$body" ]; then
-            run_url=$(printf '%s' "$body" | jq -r '.html_url // empty' 2>/dev/null || true)
-          fi
-
-          echo "已派发 ${WORKFLOW_FILE}（ref=${ref}，HTTP ${code}）"
+          run_url=$(jq -r '.html_url // empty' resp.json 2>/dev/null || true)
+          echo "已派发 ${matched}"
+          if [ -n "$run_url" ]; then echo "运行地址: $run_url"; fi
 
           {
+            echo "## 已派发 \`${matched}\`"
             echo ""
-            echo "### 派发结果"
-            echo ""
-            echo "| workflow | ref | HTTP |"
-            echo "|---|---|---|"
-            echo "| \`${WORKFLOW_FILE}\` | \`${ref}\` | ${code} |"
+            echo "ref: \`${ref}\` · HTTP ${code}"
             if [ -n "$run_url" ]; then
               echo ""
               echo "运行地址：${run_url}"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -n "$run_url" ]; then
-            echo "运行地址: ${run_url}"
-          fi
