@@ -1,12 +1,21 @@
 import requests
 import json
 import os
+import sys
 import logging
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
 from pypushdeer import PushDeer
-from logging_config import init_logger
+
+# python/logging_config.py 是语言级共享模块。本文件位于 python/<项目>/，
+# 比共享模块深一层，因此要先把上层目录加入 sys.path 才能 import 到它。
+# 项目目录放在最前，允许项目用同名模块覆盖共享实现。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))  # python/
+sys.path.insert(0, _HERE)                   # 项目自身
+
+from logging_config import init_logger  # noqa: E402
 
 
 class CheckinStatus(Enum):
@@ -511,7 +520,7 @@ class Checker:
 
 
 # 初始化日志
-logger = init_logger()
+logger = init_logger("glados_checkin")
 
 
 def main():

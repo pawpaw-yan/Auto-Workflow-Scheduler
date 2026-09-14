@@ -20,12 +20,17 @@
 
 ```
 python/
+├── requirements.txt        # 语言级公共依赖
+├── logging_config.py       # 语言级共享日志初始化（所有 Python 项目共用）
 └── oracle-abc/
     ├── index.py            # 入口脚本
-    ├── logging_config.py   # 日志初始化
     ├── requirements.txt    # oci（OCI Python SDK）
     └── README.md
 ```
+
+> `logging_config.py` 是**所有 Python 项目共用**的模块，放在 `python/` 下（与 `requirements.txt` 同级）。
+> 项目脚本位于 `python/<项目>/`，比它深一层，因此 `index.py` 开头会先把上层目录加入 `sys.path` 再 import——
+> 这样无论从仓库根目录还是项目目录启动都能解析。
 
 对应 workflow：`.github/workflows/oracle-abc.yml`
 对应 Environment：`python_oracle_abc`
@@ -295,7 +300,7 @@ python index.py
 | 文件 | 作用 |
 |---|---|
 | `python/oracle-abc/index.py` | 入口脚本 |
-| `python/oracle-abc/logging_config.py` | 日志初始化 |
+| `python/logging_config.py` | **语言级共享**日志初始化 |
 | `.github/workflows/oracle-abc.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 安装依赖（公共 + 项目独有） |

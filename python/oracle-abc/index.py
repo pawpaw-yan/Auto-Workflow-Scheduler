@@ -39,9 +39,14 @@ import traceback
 from types import SimpleNamespace
 from typing import NoReturn
 
-# common/execute.sh 会先 cd 到项目目录再执行；这里额外兜一层，
-# 保证从仓库根目录直接 `python python/oracle-abc/index.py` 也能找到同目录模块。
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# python/logging_config.py 是语言级共享模块。本文件位于 python/<项目>/，
+# 比共享模块深一层，因此要先把上层目录加入 sys.path 才能 import 到它。
+# 项目目录放在最前，允许项目用同名模块覆盖共享实现。
+# 这样无论从哪个目录启动（execute.sh 会 cd 到项目目录、也可从仓库根直接跑），
+# import 都能解析。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))  # python/
+sys.path.insert(0, _HERE)                   # 项目自身
 
 try:
     from oci import pagination
@@ -66,7 +71,7 @@ except ImportError as exc:
 
 from logging_config import init_logger
 
-logger = init_logger()
+logger = init_logger("oracle_abc")
 
 SHAPE = os.environ.get("OCI_SHAPE") or "VM.Standard.A1.Flex"
 
