@@ -57,8 +57,11 @@ jobs:
       # ── 指纹密钥：仓库级 secret，只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印 ──
       COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
 
-      # 需要自检的名称（secrets + variables 混合），空格分隔
-      SECRET_NAMES: "GLADOS_COOKIES PUSHDEER_SENDKEY GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
+      # 需要自检的名称，空格分隔。
+      #   SECRET_NAMES   → 只输出 HMAC 指纹（值不可见）
+      #   VARIABLE_NAMES → 直接输出明文值（方便直接确认配置）
+      SECRET_NAMES:   "GLADOS_COOKIES PUSHDEER_SENDKEY"
+      VARIABLE_NAMES: "GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 
     steps:
       - uses: actions/checkout@v4

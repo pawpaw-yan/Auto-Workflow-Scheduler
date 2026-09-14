@@ -173,9 +173,36 @@ Cookie 通过请求头 `cookie` 传递，超时设置为连接 60 秒 / 读取 1
 #1 P:10 剩余:180 天 总积分:2100 积分 | 签到成功 | 兑换成功: plan500
 ```
 
-### Job Summary
+### 配置自检
 
-`common/check-secrets.sh` 会在运行摘要里输出一张配置自检表（是否为空 / 位数 / HMAC 指纹）。
+`common/check-secrets.sh` 会输出一张自检表，**并按类型采用不同展示方式**：
+
+```
+Environment : python_glados_checkin
+
+NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
+------------------------ --------- ------- --------- --------------------
+GLADOS_COOKIES           secret    no      135       fdc2b45c76e7
+PUSHDEER_SENDKEY         secret    yes     0         -
+GLADOS_EXCHANGE_PLAN     variable  no      7         plan500
+GLADOS_VERBOSE           variable  no      4         true
+```
+
+| 类型 | 展示内容 | 原因 |
+|---|---|---|
+| `secret` | HMAC-SHA256 指纹（前 12 位） | 值本身不可见，指纹可以跨环境 / 跨运行比对，且没有密钥无法离线爆破 |
+| `variable` | **明文值** | 本来就是公开配置，直接看值比看指纹直观，指纹对它没有意义 |
+
+**指纹的用途**：同一 secret 在不同环境里指纹相同 → 配的是同一个值；同一环境跨运行指纹变了 → 说明有人改过这个 secret。
+
+自检范围由 workflow 里的两个变量控制：
+
+```yaml
+SECRET_NAMES:   "GLADOS_COOKIES PUSHDEER_SENDKEY"
+VARIABLE_NAMES: "GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
+```
+
+> 新增配置项时，记得同时把名字加到对应的这一类里，否则不会被自检。
 
 ---
 
@@ -249,7 +276,13 @@ python index.py
 
 ### 怎么验证配置真的生效了
 
-**方法一**：看 `Check secrets` 步骤的表格，`LENGTH` 列为 `0` 就是没注入成功。
+**方法一**：看 `Check secrets` 步骤输出的表格
+
+| 现象 | 含义 |
+|---|---|
+| `EMPTY` 为 `yes`、`LENGTH` 为 `0` | **没注入成功**——没建、名字拼错、或引用前缀写错 |
+| `variable` 行显示明文值（如 `plan500`、`true`） | 注入成功，显示的就是生效值 |
+| `secret` 行有 12 位指纹 | 注入成功（值不可见，只能靠指纹比对是否被改过） |
 
 **方法二**：看 Python 启动日志，这几行**不受 verbose 影响**，一定输出，直接打印最终生效值：
 
@@ -269,5 +302,5 @@ python index.py
 | `.github/workflows/glados_checkin.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 依赖安装 |
-| `common/check-secrets.sh` | 配置自检（位数 + HMAC 指纹） |
+| `common/check-secrets.sh` | 配置自检（secrets 输出指纹、variables 输出明文） |
 | `common/execute.sh` | 按入口扩展名执行 |
