@@ -1,0 +1,153 @@
+name: glados_checkin
+
+# ═══════════════════════════════════════════════════════════════════════
+# 项目：glados_checkin
+#
+# 对应代码：python/glados_checkin/index.py
+# 对应环境：python_glados_checkin
+#
+# 触发方式：
+#   1) 总入口派发：run-project.yml 传 project=glados_checkin
+#   2) 直接调用 API：
+#      POST /repos/<owner>/<repo>/actions/workflows/glados_checkin.yml/dispatches
+#      {"ref":"main"}
+#   3) Actions 页面手动 Run workflow
+#
+# 新增同类项目时，复制本文件改三处即可：
+#   - name
+#   - environment.name
+#   - env 里的 secrets 与 SECRET_NAMES
+# ═══════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: glados_checkin
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: glados_checkin
+    runs-on: ubuntu-latest
+    # 挂到本项目专属的 Environment，secrets 与其他项目隔离
+    environment:
+      name: python_glados_checkin
+    permissions:
+      contents: read
+    env:
+      # 本项目挂载的 Environment 名（与上面的 environment.name 保持一致）
+      ENV_NAME: python_glados_checkin
+
+      # ─────────────────────────────────────────────────────────────
+      # 本项目需要的 secret。
+      # ⚠️ 新增 secret 时，同时把名称加进下面的 SECRET_NAMES。
+      #    未在本环境配置的会解析为空字符串，不会报错。
+      # ─────────────────────────────────────────────────────────────
+      GLADOS_COOKIES:         ${{ secrets.GLADOS_COOKIES }}
+      GLADOS_EXCHANGE_PLAN:   ${{ secrets.GLADOS_EXCHANGE_PLAN }}
+      GLADOS_VERBOSE:         ${{ secrets.GLADOS_VERBOSE }}
+      PUSHDEER_SENDKEY:       ${{ secrets.PUSHDEER_SENDKEY }}
+
+      # 指纹密钥（仓库级）：只用于生成 HMAC 指纹做比对，本身绝不打印
+      COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
+
+      # 需要校验的 secret 名称，空格分隔
+      SECRET_NAMES: "GLADOS_COOKIES GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE PUSHDEER_SENDKEY"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip >/dev/null
+
+          # 公共依赖 → 项目独有依赖，存在才装
+          for f in "python/requirements.txt" "python/glados_checkin/requirements.txt"; do
+            if [ -f "$f" ]; then
+              echo "→ pip install -r $f"
+              pip install -r "$f"
+            fi
+          done
+
+          echo "依赖处理完成"
+
+      # ─────────────────────────────────────────────────────────────
+      # secrets 自检：只输出「是否为空 / 位数 / HMAC 指纹」
+      #
+      # 不使用 MD5 的原因：本仓库是公开仓库，Actions 日志任何人可读。
+      # 裸 MD5 等于公开一个验证预言机，可被离线枚举爆破；且 GitHub 的
+      # 自动脱敏基于原值字符串匹配，对 MD5 完全失效。
+      # HMAC-SHA256 指纹带密钥，外部拿到日志也无法反推，但可稳定用于
+      # 「同一 secret 在不同运行/不同环境之间是否一致」的比对。
+      # ─────────────────────────────────────────────────────────────
+      - name: Check secrets
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          env_name="$ENV_NAME"
+
+          echo "Environment : $env_name"
+          echo
+          printf '%-24s %-7s %-9s %s\n' "SECRET" "EMPTY" "LENGTH" "FINGERPRINT"
+          printf '%-24s %-7s %-9s %s\n' \
+                 "------------------------" "-------" "---------" "--------------------"
+
+          {
+            echo "### Secrets — \`$env_name\`"
+            echo ""
+            echo "| Secret | Empty | Length | Fingerprint |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          missing=0
+          for name in $SECRET_NAMES; do
+            value="${!name-}"
+
+            if [ -z "$value" ]; then
+              empty="yes"
+              length="0"
+              fp="-"
+              missing=$((missing + 1))
+            else
+              empty="no"
+              length="${#value}"
+              if [ -n "${COMMON_FINGERPRINT_KEY:-}" ]; then
+                fp=$(printf '%s' "$value" \
+                     | openssl dgst -sha256 -hmac "$COMMON_FINGERPRINT_KEY" -r \
+                     | cut -d' ' -f1 | cut -c1-12)
+                [ -n "$fp" ] || fp="(err)"
+              else
+                fp="(skip: no key)"
+              fi
+            fi
+
+            printf '%-24s %-7s %-9s %s\n' "$name" "$empty" "$length" "$fp"
+            echo "| \`$name\` | $empty | $length | \`$fp\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          if [ "$missing" -gt 0 ]; then
+            echo
+            echo "::warning::$env_name 中有 $missing 个 secret 为空（可能未配置，也可能本项目用不到）"
+          fi
+
+      - name: Run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 切到项目目录再执行，保证项目内的相对导入正常工作
+          # （index.py 里有 from logging_config import init_logger）
+          cd python/glados_checkin
+
+          echo "════════ 运行 python/glados_checkin/index.py ════════"
+          python index.py
