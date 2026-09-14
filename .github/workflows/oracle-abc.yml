@@ -3,8 +3,8 @@ name: oracle-abc
 # ═══════════════════════════════════════════════════════════════════════
 # 项目：oracle-abc
 #
-# 对应代码：shell/oracle-abc/index.sh
-# 对应环境：shell_oracle_abc
+# 对应代码：python/oracle-abc/index.py
+# 对应环境：python_oracle_abc
 #
 # 功能：抢占 OCI Ampere A1 实例（1 OCPU / 6 GB），
 #       抢到后停止并升级为 2 OCPU / 12 GB；若已抢到则直接升级。
@@ -34,18 +34,18 @@ jobs:
     name: oracle-abc
     runs-on: ubuntu-latest
     environment:
-      name: shell_oracle_abc
+      name: python_oracle_abc
     permissions:
       contents: read
     env:
       # ── 传给 common/*.sh 的通用参数 ──
-      ENV_NAME:  shell_oracle_abc
-      LANG_NAME: shell
+      ENV_NAME:  python_oracle_abc
+      LANG_NAME: python
       PROJECT:   oracle-abc
-      ENTRY:     shell/oracle-abc/index.sh
+      ENTRY:     python/oracle-abc/index.py
 
       # ─────────────────────────────────────────────────────────────
-      # OCI 认证。OCI CLI 原生支持这些环境变量，无需 ~/.oci/config：
+      # OCI 认证。index.py 直接读这些环境变量拼成 SDK config，无需 ~/.oci/config：
       #   OCI_CLI_USER / OCI_CLI_FINGERPRINT / OCI_CLI_TENANCY / OCI_CLI_REGION
       #   OCI_CLI_KEY_CONTENT（私钥内容）或 OCI_CLI_KEY_FILE（私钥路径）
       #
@@ -105,10 +105,8 @@ jobs:
         with:
           python-version: '3.13'
 
-      # oci CLI 是系统级工具（Python 包），不属于项目依赖，单独声明
-      - name: Install OCI CLI
-        run: pip install oci-cli
-
+      # OCI Python SDK（oci）已作为项目依赖写在 python/oracle-abc/requirements.txt，
+      # 由 common/install-deps.sh 统一安装，不再需要单独装 oci-cli
       - name: Install dependencies
         run: bash common/install-deps.sh
 

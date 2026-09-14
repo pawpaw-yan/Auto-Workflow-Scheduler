@@ -19,14 +19,31 @@
 ## 目录结构
 
 ```
-shell/
+python/
 └── oracle-abc/
-    ├── index.sh      # 入口脚本
+    ├── index.py            # 入口脚本
+    ├── logging_config.py   # 日志初始化
+    ├── requirements.txt    # oci（OCI Python SDK）
     └── README.md
 ```
 
 对应 workflow：`.github/workflows/oracle-abc.yml`
-对应 Environment：`shell_oracle_abc`
+对应 Environment：`python_oracle_abc`
+
+---
+
+## 实现方式
+
+用 **OCI Python SDK**（`oci` 包）实现，而不是调用 `oci` CLI：
+
+| | oci CLI | OCI Python SDK（当前） |
+|---|---|---|
+| 额外安装 | 需要 `pip install oci-cli` | 随 `requirements.txt` 安装 `oci` |
+| 解析输出 | 依赖 `jq`，靠文本 grep 判定 | 直接拿对象属性，靠异常类型判定 |
+| 容量不足判定 | `grep -i capacity` 匹配 stderr 文本 | `ServiceError` 的 `code` / `message` / `status` |
+| 等待状态迁移 | `--wait-for-state` | `*_and_wait_for_state` + waiter |
+
+好处是**没有外部命令依赖**，错误判定不再依赖文本匹配，逻辑更稳。
 
 ---
 
@@ -34,7 +51,7 @@ shell/
 
 ### Environment secret
 
-在 **Settings → Environments → `shell_oracle_abc` → Environment secrets** 中添加：
+在 **Settings → Environments → `python_oracle_abc` → Environment secrets** 中添加：
 
 | 名称 | 必填 | 说明 |
 |---|---|---|
@@ -44,7 +61,7 @@ shell/
 
 ### Environment variables
 
-在 **Settings → Environments → `shell_oracle_abc` → Environment variables** 中添加：
+在 **Settings → Environments → `python_oracle_abc` → Environment variables** 中添加：
 
 | 名称 | 必填 | 示例 / 获取方式 |
 |---|---|---|
@@ -61,9 +78,15 @@ shell/
 
 另外还有三个控制「抢占 + 升级」的参数 `OCPU` / `MEMORY` / `TARGET`，同样放在这个 Environment 下，详见下方「可调参数」。
 
-> 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，并在 `oracle-abc.yml` 里取消对应那行的注释。
+> 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，并在 `oracle-abc.yml` 里取消对应那行的注释。**私钥未加密时不要设置这个值**，否则会干扰解析。
 
 ### 如何拿镜像 OCID
+
+任选其一：
+
+**控制台**：Create Instance 页面选好镜像，页面底部会显示对应的 OCID。
+
+**OCI CLI**（本机或 Cloud Shell）：
 
 ```bash
 oci compute image list \
@@ -73,7 +96,19 @@ oci compute image list \
   --query 'data[0].id' --raw-output
 ```
 
-也可以直接在控制台 Create Instance 页面选好镜像，页面底部会显示对应的 OCID。
+**Python SDK**：
+
+```python
+import oci
+config = oci.config.from_file()
+data = oci.core.ComputeClient(config).list_images(
+    compartment_id="<tenancy OCID>",
+    operating_system="Canonical Ubuntu",
+    sort_by="TIMECREATED",
+    sort_order="DESC",
+).data
+print(data[0].id)
+```
 
 ---
 
@@ -155,7 +190,7 @@ Content-Type: application/json
 
 调度器可以一直打着，不会产生副作用。
 
-**防死循环**：如果某一轮「命令成功返回但规格实际没变」（比如被平台限制），轮数上限会兜住并报错中止。上限为 `TARGET - OCPU + 2`。
+**防死循环**：如果某一轮「调用成功返回但规格实际没变」（比如被平台限制），轮数上限会兜住并报错中止。上限为 `TARGET - OCPU + 2`（至少 3）。
 
 ---
 
@@ -166,9 +201,11 @@ Content-Type: application/json
 | `0` | 抢到并升级成功 | 正常 |
 | `0` | **没有容量，未抢到** | **预期内结果**，只打 `::warning::`。高频调度下这是常态，用非 0 会让 Actions 页满屏红色 |
 | `0` | 已经是目标规格 | 无需操作 |
-| `1` | 缺配置 / 认证失败 / OCI 调用异常 | 需要处理 |
+| `1` | 缺配置 / 认证失败 / OCI 调用异常 / 等待超时 | 需要处理 |
 
-> 如果你希望在「没抢到」时也变红（比如配合告警），把 `index.sh` 里那段 `::warning::` 改成 `::error::` 并 `exit 1` 即可。
+> 如果你希望在「没抢到」时也变红（比如配合告警），把 `index.py` 里 `try_launch()` 中那段 `warn(...)` 改成 `die(...)` 即可。
+>
+> 注意：脚本对**任何未预期异常**都会 `sys.exit(1)`，不会出现「任务实际失败但 workflow 显示绿色」的情况。
 
 ---
 
@@ -208,6 +245,8 @@ Content-Type: application/json
 3. `OCI_CLI_USER` / `OCI_CLI_TENANCY` 是否填反了
 4. 控制台看 `check_secrets` 表格的输出：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上
 
+> 报错信息形如 `OCI 调用失败：[401] NotAuthenticated — ...`，`[403] NotAuthorizedOrNotFound` 通常是权限或 OCID 填错。
+
 ### `Out of host capacity` / 一直抢不到
 
 这是 A1 的常态，不是脚本问题。提高命中率的办法：
@@ -215,15 +254,16 @@ Content-Type: application/json
 - **调小抢占规格**（`GRAB_OCPUS=1`、`GRAB_MEMORY_GB=6` 已经很小了）
 - **提高触发频率**（外部调度器 1~5 分钟一次）
 - **换可用域**（`OCI_AVAILABILITY_DOMAIN` 试其他 AD）
-- 用 `oci compute compute-capacity-report` 探测当前各 AD 的可用容量
+
+> A1 缺货时 OCI 返回的形态不统一：有的区域是 500 `InternalError` + "Out of host capacity."，有的区域 code 直接是 `OutOfHostCapacity`。`is_capacity_error()` 已同时覆盖这几种，所以不必担心被误判为失败。
 
 ### 升级时 `LimitExceeded`
 
-目标规格超出了账号的服务限额（Always Free 是 4 OCPU / 24 GB）。把 `TARGET_OCPUS` / `TARGET_MEMORY_GB` 调小。
+目标规格超出了账号的服务限额（Always Free 是 4 OCPU / 24 GB）。把 `TARGET_OCPUS` 调小。
 
 ### 升级后启动失败
 
-停止再启动的过程中，实例可能重新遇到容量问题。想规避这一点，可以改成**不主动停止**、直接 `oci compute instance update`——据 Oracle 文档，运行时改 shape 会由平台自动重启实例；代价是可能触发非优雅关机，有数据损坏风险（这也是脚本默认走 `SOFTSTOP` 的原因）。
+停止再启动的过程中，实例可能重新遇到容量问题。想规避这一点，可以改成**不主动停止**、直接 `update_instance`——据 Oracle 文档，运行时改 shape 会由平台自动重启实例；代价是可能触发非优雅关机，有数据损坏风险（这也是默认走 `SOFTSTOP` 的原因）。
 
 ### 脚本在本地怎么跑
 
@@ -241,8 +281,9 @@ export OCI_IMAGE_ID=ocid1.image.oc1..xxx
 export OCI_INSTANCE_NAME=oracle-abc
 export OCI_SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
 
-cd shell/oracle-abc
-bash index.sh
+pip install -r python/oracle-abc/requirements.txt
+cd python/oracle-abc
+python index.py
 ```
 
 本地用 `OCI_CLI_KEY_FILE` 指定私钥路径，比把内容塞进环境变量方便。
@@ -253,9 +294,11 @@ bash index.sh
 
 | 文件 | 作用 |
 |---|---|
-| `shell/oracle-abc/index.sh` | 入口脚本 |
+| `python/oracle-abc/index.py` | 入口脚本 |
+| `python/oracle-abc/logging_config.py` | 日志初始化 |
 | `.github/workflows/oracle-abc.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
+| `common/install-deps.sh` | 安装依赖（公共 + 项目独有） |
 | `common/check-secrets.sh` | 配置自检（secret 输出指纹、variables 输出明文） |
 | `common/execute.sh` | 执行入口，输出同时写入日志和 `output.log` |
 | `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |
