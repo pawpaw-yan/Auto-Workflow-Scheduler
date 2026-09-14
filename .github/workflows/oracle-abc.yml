@@ -70,15 +70,28 @@ jobs:
       OCI_INSTANCE_NAME:        ${{ vars.OCI_INSTANCE_NAME }}
       OCI_SSH_PUBLIC_KEY:       ${{ vars.OCI_SSH_PUBLIC_KEY }}
 
-      # 抢占规格与目标规格（留空则用脚本内默认值：1c6g 抢、2c12 升级）
-      # GRAB_OCPUS:        ${{ vars.GRAB_OCPUS }}
-      # GRAB_MEMORY_GB:    ${{ vars.GRAB_MEMORY_GB }}
-      # TARGET_OCPUS:      ${{ vars.TARGET_OCPUS }}
-      # TARGET_MEMORY_GB:  ${{ vars.TARGET_MEMORY_GB }}
+      # ─────────────────────────────────────────────────────────────
+      # 抢占与升级参数。对应 GitHub 上的三个 Environment variables：
+      #   OCPU    抢占时申请的 OCPU 数（越小越容易抢到）
+      #   MEMORY  抢占时申请的内存（GB）
+      #   TARGET  升级的最终目标 OCPU 数
+      #
+      # 例：OCPU=1  MEMORY=6  TARGET=4
+      #   → 抢 1c6g，然后逐步升级 2c12 → 3c18 → 4c24
+      #   → 每轮升完都重新判断，达到 TARGET 才结束
+      #
+      # 留空则用脚本内默认值（抢 1c6g、目标 2c）
+      # ─────────────────────────────────────────────────────────────
+      GRAB_OCPUS:     ${{ vars.OCPU }}
+      GRAB_MEMORY_GB: ${{ vars.MEMORY }}
+      TARGET_OCPUS:   ${{ vars.TARGET }}
+
+      # 可选：每个 OCPU 配多少内存 GB。不设则沿用 MEMORY / OCPU 的比例
+      # MEMORY_PER_OCPU: ${{ vars.MEMORY_PER_OCPU }}
 
       # 自检：secret 只输出 HMAC 指纹，variables 输出明文值
       SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
-      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME"
+      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCPU MEMORY TARGET"
 
     steps:
       - uses: actions/checkout@v4

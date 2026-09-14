@@ -2,9 +2,11 @@
 
 抢占 OCI（Oracle Cloud）Ampere A1 实例，抢到后自动停止并升级规格。
 
-**流程**：先抢一台小规格（默认 `1 OCPU / 6 GB`）的 A1，抢到后停止、把 shape 改成 `2 OCPU / 12 GB`、再启动。
+**流程**：先抢一台小规格（默认 `1 OCPU / 6 GB`）的 A1；抢到后**逐步升级**——每次 +1 OCPU，升完立刻重新判断，直到达到目标 `TARGET`。
 
-**为什么先抢小的**：A1 常年缺货，申请的规格越小越容易命中容量；抢到后再升到目标规格。
+**为什么先抢小的**：A1 常年缺货，申请的规格越小越容易命中容量；抢到后再一路升上去。
+
+**为什么逐步 +1 而不是一步到位**：每一步都有独立的成功机会。直接跳到大规格如果失败，前面的努力就白费了；逐步升则至少能停在某个已经成功的规格上。
 
 ---
 
@@ -50,6 +52,8 @@ shell/
 | `OCI_IMAGE_ID` | ✅ | 见下方「如何拿镜像 OCID」（仅创建实例时需要） |
 | `OCI_INSTANCE_NAME` | 选填 | 默认 `oracle-abc`。查找和创建都用这个 display-name |
 | `OCI_SSH_PUBLIC_KEY` | 选填 | 公钥内容（`~/.ssh/id_ed25519.pub`），用于创建时注入免密登录 |
+
+另外还有三个控制「抢占 + 升级」的参数 `OCPU` / `MEMORY` / `TARGET`，同样放在这个 Environment 下，详见下方「可调参数」。
 
 > 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，并在 `oracle-abc.yml` 里取消对应那行的注释。
 
@@ -103,27 +107,43 @@ Content-Type: application/json
 
 ```
 步骤 1  按 display-name 查找实例（排除 TERMINATED / TERMINATING）
-步骤 2  不存在 → 尝试创建 1 OCPU / 6 GB
-            成功 → 继续
+步骤 2  不存在 → 尝试创建 OCPU / MEMORY 规格的 A1
+            成功     → 继续
             容量不足 → 打警告，退出 0（等下次重试）
-        已存在 → 跳过创建
-步骤 3  读取当前 shape-config
-            已是目标规格 → 直接退出 0
-步骤 4  停止（SOFTSTOP，等 STOPPED）
-        → 更新 shape 为 2 OCPU / 12 GB
-        → 启动（等 RUNNING）
+        已存在   → 跳过创建
+
+步骤 3  升级循环（每轮都重新读取一次当前状态）
+        ┌──────────────────────────────────────────────┐
+        │  读当前 OCPU                                  │
+        │    ≥ TARGET → 结束                            │
+        │    否则     → 停止 → 升级到「当前 +1」→ 启动   │
+        │              ↑ 升完立刻回到顶部重新判断        │
+        └──────────────────────────────────────────────┘
 ```
+
+**举例**：`OCPU=1`、`MEMORY=6`、`TARGET=4`
+
+| 轮次 | 当前 | 升级到 | 内存 |
+|---|---|---|---|
+| 1 | 1c | 2c | 12 GB |
+| 2 | 2c | 3c | 18 GB |
+| 3 | 3c | 4c | 24 GB |
+| 4 | 4c | — | 已达 TARGET，结束 |
+
+> 内存按 `MEMORY / OCPU` 的比例自动跟随（上例为每 OCPU 6 GB），可用 `MEMORY_PER_OCPU` 显式覆盖。
 
 **幂等性**：脚本可以无脑反复执行。
 
 | 当前状态 | 行为 |
 |---|---|
 | 还没抢到 | 尝试创建；失败则退出 0 |
-| 抢到了但规格是 1c6g | 停止 → 升级到 2c12 → 启动 |
-| 已经是 2c12 | **什么都不做**，直接退出 0 |
-| 实例是 STOPPED 状态 | 跳过停止，直接升级并启动 |
+| 抢到了但没到 TARGET | 逐轮 +1 升级，直到达标 |
+| 已经达到 TARGET | **什么都不做**，直接退出 0 |
+| 中间某轮是 STOPPED | 跳过停止，直接升级并启动 |
 
-所以调度器可以一直打着，不会产生副作用。
+调度器可以一直打着，不会产生副作用。
+
+**防死循环**：如果某一轮「命令成功返回但规格实际没变」（比如被平台限制），轮数上限会兜住并报错中止。上限为 `TARGET - OCPU + 2`。
 
 ---
 
@@ -142,19 +162,25 @@ Content-Type: application/json
 
 ## 可调参数
 
-都可以通过 Environment variables 覆盖（`oracle-abc.yml` 里有注释掉的模板）：
+### 三个主参数（GitHub Variables）
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `OCI_SHAPE` | `VM.Standard.A1.Flex` | 目标 shape |
-| `GRAB_OCPUS` | `1` | 抢占时申请的 OCPU 数 |
-| `GRAB_MEMORY_GB` | `6` | 抢占时申请的内存 |
-| `TARGET_OCPUS` | `2` | 升级后的 OCPU 数 |
-| `TARGET_MEMORY_GB` | `12` | 升级后的内存 |
-| `OCI_BOOT_VOLUME_GB` | `50` | 引导卷大小 |
-| `STOP_ACTION` | `SOFTSTOP` | `SOFTSTOP` 优雅关机 / `STOP` 直接断电 |
+| GitHub Variable | 脚本变量 | 默认 | 说明 |
+|---|---|---|---|
+| `OCPU` | `GRAB_OCPUS` | `1` | 抢占时申请的 OCPU 数（越小越容易抢到） |
+| `MEMORY` | `GRAB_MEMORY_GB` | `6` | 抢占时申请的内存（GB） |
+| `TARGET` | `TARGET_OCPUS` | `2` | 升级的最终目标 OCPU 数 |
 
-> Oracle Always Free 的 Ampere A1 额度是 **4 OCPU / 24 GB**（以官方为准），`2c12` 在免费额度内。
+### 其他可选
+
+| GitHub Variable | 脚本变量 | 默认 | 说明 |
+|---|---|---|---|
+| `MEMORY_PER_OCPU` | `MEMORY_PER_OCPU` | `MEMORY / OCPU` | 每个 OCPU 配多少 GB 内存 |
+| — | `OCI_SHAPE` | `VM.Standard.A1.Flex` | 目标 shape |
+| — | `OCI_BOOT_VOLUME_GB` | `50` | 引导卷大小 |
+| — | `STOP_ACTION` | `SOFTSTOP` | `SOFTSTOP` 优雅关机 / `STOP` 直接断电 |
+
+> Oracle Always Free 的 Ampere A1 额度是 **4 OCPU / 24 GB**（以官方为准）。
+> 所以 `OCPU=1`、`MEMORY=6`、`TARGET=4` 时，最终会升到 `4c24g`，正好用满免费额度。
 
 ---
 
