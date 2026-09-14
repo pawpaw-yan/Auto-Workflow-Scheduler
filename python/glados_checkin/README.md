@@ -269,6 +269,7 @@ VARIABLE_NAMES: "GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 > DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
 > COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
 > ```
+>
 > **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
 >
 > ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。它只决定「要不要把它们写进公开日志」。

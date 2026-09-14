@@ -88,6 +88,62 @@ python/
 
 > 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，并在 `oracle-abc.yml` 里取消对应那行的注释。**私钥未加密时不要设置这个值**，否则会干扰解析。
 
+### 仓库级 secret
+
+本项目还会用到一项**仓库级**配置（所有项目共用），在 **Settings → Secrets and variables → Actions → Secrets** 中添加（不要放进 Environment）：
+
+| 名称 | 必填 | 说明 |
+|---|---|---|
+| `COMMON_FINGERPRINT_KEY` | 选填 | 供 `common/check-secrets.sh` 生成 HMAC 指纹，自身绝不打印。不填则该列显示 `(skip: no key)` |
+
+任意长随机字符串即可，生成方式（PowerShell）：
+
+```powershell
+(New-Guid).ToString('N') + (New-Guid).ToString('N')
+```
+
+### 配置自检与调试开关
+
+workflow 在跑脚本之前会执行 `common/check-secrets.sh`，输出一张表（同时写入 Job Summary）：
+
+```
+NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
+------------------------ --------- ------- --------- --------------------
+OCI_CLI_KEY_CONTENT      secret    no      1674      a1b2c3d4e5f6
+OCI_SUBNET_ID            variable  no      92        (hidden)
+```
+
+| 类型 | 展示内容 | 原因 |
+|---|---|---|
+| `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见，指纹可跨环境 / 跨运行比对，且没有密钥无法离线爆破。**无论任何开关都不会打印明文** |
+| `variable` | **`(hidden)`**（只给 空 / 长度） | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，打印等于公开你的标识 |
+| `variable`（调试开关开启后） | 明文值（超 60 字符自动截断） | 排查配置时临时启用，用完请关掉 |
+
+**默认不打印 Variables 的值。** 需要确认实际内容时，打开调试开关**重跑一次**，用完再关掉：
+
+| 开关 | 配在哪 | 作用范围 |
+|---|---|---|
+| `DEBUG_MODE` | **Environment `python_oracle_abc` → Variables** | **只影响本项目** |
+| `COMMON_DEBUG_MODE` | **仓库级 Variables**（Settings → Secrets and variables → Actions → Variables） | 影响所有项目 |
+
+判定规则：
+
+- 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；其余值一律视为关闭
+- **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），因此可以用 `DEBUG_MODE=false` 单独关掉某个已全局开启的环境
+- 两者都没设 → 关闭（fail-closed，默认隐藏）
+
+> ⚠️ **开关靠 workflow 的 `env:` 桥接才生效**——脚本只认进程环境变量：
+> ```yaml
+> DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
+> COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
+> ```
+>
+> **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
+>
+> ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。它只决定「要不要把它们写进公开日志」。
+
+**排查 `401` 时怎么用**：先只看 `OCI_CLI_KEY_CONTENT` 的 `LENGTH` 是否为 0（够判断「私钥有没有配上」）；要确认 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 有没有填反，再开 `DEBUG_MODE` 看明文。
+
 ### 如何拿镜像 OCID
 
 任选其一：
@@ -251,7 +307,7 @@ Content-Type: application/json
 1. `OCI_CLI_KEY_CONTENT` 是否是**私钥全文**（不是公钥、不是指纹）
 2. `OCI_CLI_FINGERPRINT` 是否和该私钥配对（在 OCI 控制台 My profile → API keys 里核对）
 3. `OCI_CLI_USER` / `OCI_CLI_TENANCY` 是否填反了
-4. 控制台看 `check_secrets` 表格的输出：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上
+4. 看**配置自检表**（见上方「配置自检与调试开关」）：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上。要确认 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 有没有填反，打开 `DEBUG_MODE` 后重跑即可看到明文
 
 > 报错信息形如 `OCI 调用失败：[401] NotAuthenticated — ...`，`[403] NotAuthorizedOrNotFound` 通常是权限或 OCID 填错。
 
