@@ -1,0 +1,110 @@
+name: oracle-abc
+
+# ═══════════════════════════════════════════════════════════════════════
+# 项目：oracle-abc
+#
+# 对应代码：shell/oracle-abc/index.sh
+# 对应环境：shell_oracle_abc
+#
+# 功能：抢占 OCI Ampere A1 实例（1 OCPU / 6 GB），
+#       抢到后停止并升级为 2 OCPU / 12 GB；若已抢到则直接升级。
+#
+# 触发方式：
+#   1) 总入口派发：run-project.yml 传 project=oracle-abc
+#   2) 直接调用 API：
+#      POST /repos/<owner>/<repo>/actions/workflows/oracle-abc.yml/dispatches
+#      {"ref":"main"}
+#   3) Actions 页面手动 Run workflow
+#
+# 典型用法：由外部调度器（cron-job.org 等）每 5 分钟触发一次，
+#          因为 A1 常年缺货，"没抢到"是预期内结果，脚本会正常退出 0。
+#
+# 通用逻辑全部在 common/*.sh，本文件只做「声明」。
+# ═══════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: oracle-abc
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: oracle-abc
+    runs-on: ubuntu-latest
+    environment:
+      name: shell_oracle_abc
+    permissions:
+      contents: read
+    env:
+      # ── 传给 common/*.sh 的通用参数 ──
+      ENV_NAME:  shell_oracle_abc
+      LANG_NAME: shell
+      PROJECT:   oracle-abc
+      ENTRY:     shell/oracle-abc/index.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # OCI 认证。OCI CLI 原生支持这些环境变量，无需 ~/.oci/config：
+      #   OCI_CLI_USER / OCI_CLI_FINGERPRINT / OCI_CLI_TENANCY / OCI_CLI_REGION
+      #   OCI_CLI_KEY_CONTENT（私钥内容）或 OCI_CLI_KEY_FILE（私钥路径）
+      #
+      # ⚠️ 只有私钥内容是真凭据，必须放 secret。
+      #    其余都是 OCID / 标识符，单独泄露无法用于认证，放 Variables
+      #    的好处是日志里明文可见，排查配置错漏时非常直观。
+      # ─────────────────────────────────────────────────────────────
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+
+      # 如果私钥带口令加密，需要额外提供（默认注释掉：空的
+      # OCI_CLI_PASSPHRASE 可能干扰未加密私钥的解析）。
+      # OCI_CLI_PASSPHRASE: ${{ secrets.OCI_CLI_PASSPHRASE }}
+
+      OCI_CLI_USER:             ${{ vars.OCI_CLI_USER }}
+      OCI_CLI_FINGERPRINT:      ${{ vars.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_TENANCY:          ${{ vars.OCI_CLI_TENANCY }}
+      OCI_CLI_REGION:           ${{ vars.OCI_CLI_REGION }}
+      OCI_COMPARTMENT_ID:       ${{ vars.OCI_COMPARTMENT_ID }}
+      OCI_AVAILABILITY_DOMAIN:  ${{ vars.OCI_AVAILABILITY_DOMAIN }}
+      OCI_SUBNET_ID:            ${{ vars.OCI_SUBNET_ID }}
+      OCI_IMAGE_ID:             ${{ vars.OCI_IMAGE_ID }}
+      OCI_INSTANCE_NAME:        ${{ vars.OCI_INSTANCE_NAME }}
+      OCI_SSH_PUBLIC_KEY:       ${{ vars.OCI_SSH_PUBLIC_KEY }}
+
+      # 抢占规格与目标规格（留空则用脚本内默认值：1c6g 抢、2c12 升级）
+      # GRAB_OCPUS:        ${{ vars.GRAB_OCPUS }}
+      # GRAB_MEMORY_GB:    ${{ vars.GRAB_MEMORY_GB }}
+      # TARGET_OCPUS:      ${{ vars.TARGET_OCPUS }}
+      # TARGET_MEMORY_GB:  ${{ vars.TARGET_MEMORY_GB }}
+
+      # 自检：secret 只输出 HMAC 指纹，variables 输出明文值
+      SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
+      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # oci CLI 是系统级工具（Python 包），不属于项目依赖，单独声明
+      - name: Install OCI CLI
+        run: pip install oci-cli
+
+      - name: Install dependencies
+        run: bash common/install-deps.sh
+
+      - name: Check secrets
+        run: bash common/check-secrets.sh
+
+      - name: Run
+        run: bash common/execute.sh
+
+      # 把 Run 的输出重新渲染到 Job Summary。
+      # if: always()：即使 Run 失败，也要把已产生的输出带出来
+      - name: Job Summary
+        if: always()
+        env:
+          SUMMARY_TITLE: oracle-abc
+        run: bash common/render-summary.sh
