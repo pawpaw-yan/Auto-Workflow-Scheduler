@@ -1,0 +1,257 @@
+name: Run Projects
+
+# ═══════════════════════════════════════════════════════════════════════
+# 通用项目执行器
+#
+# 识别约定：
+#     <语言>/<项目>/index.<扩展名>
+#
+# 示例：
+#     python/glados_checkin/index.py   →  Environment: python_glados_checkin
+#     shell/backup/index.sh            →  Environment: shell_backup
+#     php/report/index.php             →  Environment: php_report
+#
+# 新增一个项目只需三步，无需改动本文件：
+#     1. 建目录并写好 index.<ext>
+#     2. 在 Settings → Environments 建同名环境（如 python_xxx）
+#     3. 在该环境里填好它自己的 secrets
+#
+# 依赖安装约定（自动探测，存在才装）：
+#     <语言>/requirements.txt          ← 该语言下所有项目共享
+#     <语言>/<项目>/requirements.txt   ← 该项目独有
+#     两者都存在时按「公共 → 独有」顺序安装
+# ═══════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 错开整点，规避 GitHub 官方点名的「整点高负载」窗口
+    - cron: "7,22,37,52 * * * *"
+
+concurrency:
+  group: run-projects
+  cancel-in-progress: false
+
+jobs:
+  # ═════════════════ 1. 扫描项目 ═════════════════
+  discover:
+    name: Discover projects
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.scan.outputs.projects }}
+      count: ${{ steps.scan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan <lang>/<project>/index.*
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 支持的语言入口，新增语言时在这里补一条
+          ENTRY_NAMES=(-name 'index.py' -o -name 'index.sh' -o -name 'index.php')
+
+          # 深度正好为 3 的入口文件：./<语言>/<项目>/index.<ext>
+          projects=$(
+            find . -mindepth 3 -maxdepth 3 -type f \
+                 \( "${ENTRY_NAMES[@]}" \) \
+                 -not -path './.git/*' \
+              | sed 's|^\./||' | sort \
+              | while read -r entry; do
+                  [ -n "$entry" ] || continue
+                  dir=$(dirname "$entry")
+                  project=$(basename "$dir")
+                  lang=$(basename "$(dirname "$dir")")
+                  ext="${entry##*.}"
+
+                  jq -n -c \
+                    --arg lang    "$lang" \
+                    --arg project "$project" \
+                    --arg env     "${lang}_${project}" \
+                    --arg entry   "$entry" \
+                    --arg ext     "$ext" \
+                    '{lang:$lang, project:$project, env:$env, entry:$entry, ext:$ext}'
+                done \
+              | jq -s -c '.'
+          )
+
+          [ -n "$projects" ] || projects='[]'
+          count=$(printf '%s' "$projects" | jq 'length')
+
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+          echo "count=$count"       >> "$GITHUB_OUTPUT"
+          echo "发现 $count 个项目: $projects"
+
+          {
+            echo "## 扫描结果"
+            echo ""
+            if [ "$count" -eq 0 ]; then
+              echo "未发现任何 \`<语言>/<项目>/index.<ext>\`，矩阵为空，跳过执行。"
+            else
+              echo "| 语言 | 项目 | Environment | 入口 |"
+              echo "|---|---|---|---|"
+              printf '%s' "$projects" \
+                | jq -r '.[] | "| \(.lang) | \(.project) | `\(.env)` | `\(.entry)` |"'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════ 2. 逐个执行 ═════════════════
+  run:
+    name: ${{ matrix.project.env }}
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        # 由扫描结果动态展开：有几个项目就生成几个 job
+        project: ${{ fromJSON(needs.discover.outputs.projects) }}
+    runs-on: ubuntu-latest
+    # 每个 job 挂到与自己项目同名的 Environment，实现 secrets 隔离
+    environment:
+      name: ${{ matrix.project.env }}
+    permissions:
+      contents: read
+    env:
+      # ─────────────────────────────────────────────────────────────────
+      # 所有项目用到的 secret 统一在此声明。
+      # ⚠️ 新增 secret 时，务必同时把名称加进下面的 SECRET_NAMES。
+      #
+      # 隔离原理：每个 job 挂的 Environment 不同，同名 secret 在各
+      # Environment 里互相独立；本 Environment 未配置的会解析为空字符串。
+      # ─────────────────────────────────────────────────────────────────
+      GLADOS_COOKIES:         ${{ secrets.GLADOS_COOKIES }}
+      GLADOS_EXCHANGE_PLAN:   ${{ secrets.GLADOS_EXCHANGE_PLAN }}
+      GLADOS_VERBOSE:         ${{ secrets.GLADOS_VERBOSE }}
+      PUSHDEER_SENDKEY:       ${{ secrets.PUSHDEER_SENDKEY }}
+
+      # 指纹密钥：只用于生成 HMAC 指纹做比对，本身绝不打印
+      COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
+
+      # 需要校验的 secret 名称，空格分隔
+      SECRET_NAMES: "GLADOS_COOKIES GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE PUSHDEER_SENDKEY"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        if: matrix.project.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup PHP
+        if: matrix.project.lang == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          lang="${{ matrix.project.lang }}"
+          project="${{ matrix.project.project }}"
+
+          if [ "$lang" = "python" ]; then
+            python -m pip install --upgrade pip >/dev/null
+            # 公共依赖 → 项目独有依赖
+            for f in "python/requirements.txt" "python/$project/requirements.txt"; do
+              if [ -f "$f" ]; then
+                echo "→ pip install -r $f"
+                pip install -r "$f"
+              fi
+            done
+          elif [ "$lang" = "php" ]; then
+            if [ -f "php/$project/composer.json" ]; then
+              echo "→ composer install ($project)"
+              composer install --no-interaction --no-progress
+            fi
+          fi
+
+          echo "依赖处理完成"
+
+      # ─────────────────────────────────────────────────────────────
+      # secrets 自检：只输出「是否为空 / 位数 / HMAC 指纹」
+      #
+      # 为什么不用 MD5：
+      #   本仓库是公开仓库，Actions 日志任何人可读。裸 MD5 等于给出一个
+      #   公开的验证预言机，可被离线枚举爆破；且 GitHub 的自动脱敏基于
+      #   原值字符串匹配，对 MD5 完全失效。
+      #   HMAC-SHA256 指纹带密钥，外部拿到日志也无法反推，但仍可稳定
+      #   用于「同一 secret 在不同环境/不同运行之间是否一致」的比对。
+      # ─────────────────────────────────────────────────────────────
+      - name: Check secrets
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          env_name="${{ matrix.project.env }}"
+
+          echo "Environment : $env_name"
+          echo
+          printf '%-24s %-7s %-9s %s\n' "SECRET" "EMPTY" "LENGTH" "FINGERPRINT"
+          printf '%-24s %-7s %-9s %s\n' \
+                 "------------------------" "-------" "---------" "--------------------"
+
+          {
+            echo "### Secrets — \`$env_name\`"
+            echo ""
+            echo "| Secret | Empty | Length | Fingerprint |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          missing=0
+          for name in $SECRET_NAMES; do
+            value="${!name-}"
+
+            if [ -z "$value" ]; then
+              empty="yes"
+              length="0"
+              fp="-"
+              missing=$((missing + 1))
+            else
+              empty="no"
+              length="${#value}"
+              if [ -n "${COMMON_FINGERPRINT_KEY:-}" ]; then
+                fp=$(printf '%s' "$value" \
+                     | openssl dgst -sha256 -hmac "$COMMON_FINGERPRINT_KEY" -r \
+                     | cut -d' ' -f1 | cut -c1-12)
+                [ -n "$fp" ] || fp="(err)"
+              else
+                fp="(skip: no key)"
+              fi
+            fi
+
+            printf '%-24s %-7s %-9s %s\n' "$name" "$empty" "$length" "$fp"
+            echo "| \`$name\` | $empty | $length | \`$fp\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          if [ "$missing" -gt 0 ]; then
+            echo
+            echo "::warning::$env_name 中有 $missing 个 secret 为空（可能未配置，也可能本项目用不到）"
+          fi
+
+      - name: Run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          entry="${{ matrix.project.entry }}"
+          ext="${{ matrix.project.ext }}"
+
+          workdir=$(dirname "$entry")
+          base=$(basename "$entry")
+
+          # 切到项目目录再执行，保证项目内的相对导入/相对路径正常工作
+          cd "$workdir"
+
+          echo "════════ 运行 $entry （工作目录: $workdir） ════════"
+
+          case "$ext" in
+            py)  python "$base" ;;
+            sh)  bash   "$base" ;;
+            php) php    "$base" ;;
+            *)   echo "::error::不支持的入口类型: $entry" ; exit 1 ;;
+          esac
