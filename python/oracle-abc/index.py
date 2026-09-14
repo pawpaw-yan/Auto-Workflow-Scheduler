@@ -93,6 +93,16 @@ LIFECYCLE_DEAD = ("TERMINATED", "TERMINATING")
 # STOP_ACTION 白名单：本任务只需要「停下来改规格」，不需要 reset 之类
 VALID_STOP_ACTIONS = ("SOFTSTOP", "STOP")
 
+# SSH 公钥的常见前缀。仅用于「格式不像公钥」的软提醒（不阻断运行）
+SSH_PUBLIC_KEY_PREFIXES = (
+    "ssh-rsa",
+    "ssh-ed25519",
+    "ssh-dss",
+    "ecdsa-sha2-",
+    "sk-ssh-ed25519",
+    "sk-ecdsa-sha2-",
+)
+
 # 预览升级路径时的迭代上限，纯粹是防御性兜底
 MAX_PREVIEW_ROUNDS = 32
 
@@ -135,6 +145,32 @@ def positive_int(name: str, raw: str) -> int:
     value = int(text)
     if value <= 0:
         die(f"{name} 必须大于 0，当前值：{value}")
+    return value
+
+
+def read_ssh_public_key() -> str:
+    """读取 SSH 公钥（用于实例创建时注入，决定实例建成后能不能登录）。
+
+    这是一个 GitHub Variable，而本仓库是公开的，变量值会以明文出现在
+    Actions 日志的自检表里。因此这里额外拦一道「误把私钥粘进来」的情况——
+    真发生了必须硬失败并把话说清楚，因为那已经等于把私钥公开了。
+    """
+    value = require_env("OCI_SSH_PUBLIC_KEY", "仅在创建实例时需要")
+
+    if "PRIVATE KEY" in value:
+        die(
+            "OCI_SSH_PUBLIC_KEY 里似乎是【私钥】！这里必须是公钥（.pub 文件内容）。"
+            "该值是 Variable 且仓库公开，日志中明文可见，请立刻到 GitHub 删除该变量，"
+            "并视为密钥已泄露：在 OCI 控制台删除对应 API key 并重建密钥对。"
+        )
+
+    if not value.split(None, 1)[0].startswith(SSH_PUBLIC_KEY_PREFIXES):
+        warn(
+            "OCI_SSH_PUBLIC_KEY 开头不像常见 SSH 公钥前缀"
+            f"（{' / '.join(SSH_PUBLIC_KEY_PREFIXES[:2])} 等），"
+            f"当前开头：{value[:24]!r}。请确认粘贴的是公钥全文。"
+        )
+
     return value
 
 
@@ -291,11 +327,10 @@ def try_launch(composite: ComputeClientCompositeOperations, settings: SimpleName
             subnet_id=require_env("OCI_SUBNET_ID", "仅在创建实例时需要"),
             assign_public_ip=True,
         ),
+        # 公钥注入：必填。不注入的话 Oracle 镜像默认禁用密码登录，
+        # 实例建出来也登不进去。
+        metadata={"ssh_authorized_keys": read_ssh_public_key()},
     )
-
-    ssh_public_key = (os.environ.get("OCI_SSH_PUBLIC_KEY") or "").strip()
-    if ssh_public_key:
-        details.metadata = {"ssh_authorized_keys": ssh_public_key}
 
     try:
         response = composite.launch_instance_and_wait_for_state(

@@ -82,7 +82,7 @@ python/
 | `OCI_SUBNET_ID` | ✅ | Networking → VCN → 子网 → OCID（仅创建实例时需要） |
 | `OCI_IMAGE_ID` | ✅ | 见下方「如何拿镜像 OCID」（仅创建实例时需要） |
 | `OCI_INSTANCE_NAME` | 选填 | 默认 `oracle-abc`。查找和创建都用这个 display-name |
-| `OCI_SSH_PUBLIC_KEY` | 选填 | 公钥内容（`~/.ssh/id_ed25519.pub`），用于创建时注入免密登录 |
+| `OCI_SSH_PUBLIC_KEY` | ✅ | SSH 公钥**全文**（`~/.ssh/id_ed25519.pub` 的内容，可多行）。创建时注入；**不填实例建出来无法登录** |
 
 另外还有三个控制「抢占 + 升级」的参数 `OCPU` / `MEMORY` / `TARGET`，同样放在这个 Environment 下，详见下方「可调参数」。
 

@@ -68,6 +68,9 @@ jobs:
       OCI_SUBNET_ID:            ${{ vars.OCI_SUBNET_ID }}
       OCI_IMAGE_ID:             ${{ vars.OCI_IMAGE_ID }}
       OCI_INSTANCE_NAME:        ${{ vars.OCI_INSTANCE_NAME }}
+      # SSH 公钥：必填。创建实例时注入，不填则实例建出来无法登录。
+      # 公钥本身不是机密，放 Variables；但请务必确认粘的是 .pub 文件内容，
+      # 代码会拦截「误把私钥粘进来」的情况。
       OCI_SSH_PUBLIC_KEY:       ${{ vars.OCI_SSH_PUBLIC_KEY }}
 
       # ─────────────────────────────────────────────────────────────
@@ -95,7 +98,7 @@ jobs:
 
       # 自检：secret 只输出 HMAC 指纹，variables 输出明文值
       SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
-      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCPU MEMORY TARGET"
+      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCI_SSH_PUBLIC_KEY OCPU MEMORY TARGET"
 
     steps:
       - uses: actions/checkout@v4

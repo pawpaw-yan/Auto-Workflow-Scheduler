@@ -65,8 +65,14 @@ show_item() {
     length="${#value}"
 
     if [ "$kind" = "variable" ]; then
-      # 非敏感项：明文展示，方便直接确认配置内容
-      display="$value"
+      # 非敏感项：明文展示，方便直接确认配置内容。
+      # 过长的值（如 SSH 公钥、base64 证书）截断显示，避免把表格撑爆；
+      # LENGTH 列仍然给出完整长度，不影响判断是否配错。
+      if [ "$length" -gt 60 ]; then
+        display="${value:0:57}...（已截断）"
+      else
+        display="$value"
+      fi
     elif [ -n "${COMMON_FINGERPRINT_KEY:-}" ]; then
       display=$(printf '%s' "$value" \
               | openssl dgst -sha256 -hmac "$COMMON_FINGERPRINT_KEY" -r \
