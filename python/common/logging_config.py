@@ -1,16 +1,21 @@
 """语言级共享的日志初始化模块。
 
-位置：`python/logging_config.py`
-被 `python/<项目>/index.py` 通过 `from logging_config import init_logger` 引用。
+位置：`python/common/logging_config.py`
+被 `python/<项目>/index.py` 通过 `from common.logging_config import init_logger` 引用。
 
-**为什么放在 `python/` 而不是 `common/`**：
-`common/` 装的是「按路径调用」的跨语言 shell 脚本（`bash common/xxx.sh`），
-而本模块是「被 import」的 Python 模块，属于**语言级**共享资源，
-与同目录的 `python/requirements.txt` 对称。
-以后若加 `php/` 公共库，同样放 `php/` 下。
+**目录约定**：
 
-**项目如何找到它**：项目位于 `python/<项目>/`，比共享模块深一层，
-因此各项目 `index.py` 开头会把上层目录加入 `sys.path`（见各项目的 bootstrap 段落）。
+    common/                     跨语言共享：shell 脚本，按路径调用（bash common/xxx.sh）
+    python/requirements.txt     语言级公共依赖
+    python/common/              语言级共享代码：Python 模块，被 import      ← 本模块
+    python/<项目>/index.py      各项目入口
+
+与仓库根的 `common/` 对称——根 `common/` 装跨语言的 shell 脚本，
+`<语言>/common/` 装该语言的共享模块。以后加 PHP 项目即 `php/common/`。
+
+**项目如何找到它**：本模块属于 `python/common` 包，而项目位于 `python/<项目>/`，
+比包根 `python/` 深一层，因此各项目 `index.py` 开头会把 `python/` 加入 `sys.path`
+（见各项目的 bootstrap 段落）。这样无论从哪个目录启动都能 import 到。
 """
 
 import logging

@@ -8,14 +8,14 @@ from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
 from pypushdeer import PushDeer
 
-# python/logging_config.py 是语言级共享模块。本文件位于 python/<项目>/，
-# 比共享模块深一层，因此要先把上层目录加入 sys.path 才能 import 到它。
+# python/common/ 是 Python 的语言级共享包。本文件位于 python/<项目>/，
+# 要把上层目录（python/）加入 sys.path 才能 `from common.xxx import ...`。
 # 项目目录放在最前，允许项目用同名模块覆盖共享实现。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))  # python/
 sys.path.insert(0, _HERE)                   # 项目自身
 
-from logging_config import init_logger  # noqa: E402
+from common.logging_config import init_logger  # noqa: E402
 
 
 class CheckinStatus(Enum):

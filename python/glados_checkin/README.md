@@ -11,15 +11,18 @@ GLaDOS（glados.cloud）自动签到，支持多账号、自动兑换、结果�
 ```
 python/
 ├── requirements.txt              # 语言级公共依赖（pypushdeer）
-├── logging_config.py             # 语言级共享日志初始化（所有 Python 项目共用）
+├── common/                       # 语言级共享代码包
+│   ├── __init__.py
+│   └── logging_config.py         #   日志初始化（所有 Python 项目共用）
 └── glados_checkin/
     ├── index.py                  # 入口脚本
     ├── requirements.txt          # 项目独有依赖（requests）
     └── README.md
 ```
 
-> `logging_config.py` 是**所有 Python 项目共用**的模块，放在 `python/` 下（与 `requirements.txt` 同级）。
-> 项目脚本位于 `python/<项目>/`，比它深一层，因此 `index.py` 开头会先把上层目录加入 `sys.path` 再 import——
+> `python/common/` 是 **Python 语言级共享代码包**，与仓库根的 `common/`（跨语言 shell 脚本）对称。
+> 项目脚本位于 `python/<项目>/`，比包根 `python/` 深一层，因此 `index.py` 开头会先把 `python/`
+> 加入 `sys.path`，再用 `from common.logging_config import init_logger` 引用——
 > 这样无论从仓库根目录还是项目目录启动都能解析。
 
 对应 workflow：`.github/workflows/glados_checkin.yml`
@@ -337,7 +340,7 @@ python index.py
 | 文件 | 作用 |
 |---|---|
 | `python/glados_checkin/index.py` | 入口脚本 |
-| `python/logging_config.py` | **语言级共享**日志初始化（stdout，UTF-8，格式见上） |
+| `python/common/logging_config.py` | **语言级共享**日志初始化（stdout，UTF-8，格式见上） |
 | `.github/workflows/glados_checkin.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 依赖安装 |

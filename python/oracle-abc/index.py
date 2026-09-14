@@ -39,8 +39,8 @@ import traceback
 from types import SimpleNamespace
 from typing import NoReturn
 
-# python/logging_config.py 是语言级共享模块。本文件位于 python/<项目>/，
-# 比共享模块深一层，因此要先把上层目录加入 sys.path 才能 import 到它。
+# python/common/ 是 Python 的语言级共享包。本文件位于 python/<项目>/，
+# 要把上层目录（python/）加入 sys.path 才能 `from common.xxx import ...`。
 # 项目目录放在最前，允许项目用同名模块覆盖共享实现。
 # 这样无论从哪个目录启动（execute.sh 会 cd 到项目目录、也可从仓库根直接跑），
 # import 都能解析。
@@ -69,7 +69,7 @@ except ImportError as exc:
     )
     sys.exit(1)
 
-from logging_config import init_logger
+from common.logging_config import init_logger
 
 logger = init_logger("oracle_abc")
 
