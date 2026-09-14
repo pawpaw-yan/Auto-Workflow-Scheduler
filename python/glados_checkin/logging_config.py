@@ -14,9 +14,19 @@ def init_logger(level: int = logging.INFO) -> logging.Logger:
     if logger.handlers:
         return logger
 
+    # 日志里含 emoji。Windows 上当 stdout 被重定向（管道、写文件、IDE 捕获）时，
+    # Python 会退回 locale 编码（GBK），打印 emoji 会抛 UnicodeEncodeError。
+    # 这里强制 stdout 走 UTF-8，本地跑和 CI 跑行为一致。
+    stream = sys.stdout
+    if hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError, ValueError):
+            pass
+
     logger.setLevel(level)
 
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(stream)
     handler.setLevel(level)
     handler.setFormatter(
         logging.Formatter(

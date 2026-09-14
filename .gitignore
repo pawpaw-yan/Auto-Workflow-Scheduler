@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 项目运行时产生的执行输出（由 common/render-summary.sh 渲染进 Job Summary）
+output.log

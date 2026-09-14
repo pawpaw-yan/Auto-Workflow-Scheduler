@@ -173,6 +173,41 @@ Cookie 通过请求头 `cookie` 传递，超时设置为连接 60 秒 / 读取 1
 #1 P:10 剩余:180 天 总积分:2100 积分 | 签到成功 | 兑换成功: plan500
 ```
 
+### 执行摘要（Job Summary）
+
+`index.py` **不需要做任何改动**——它照常往 stdout 打日志。摘要由 workflow 层负责，分两步：
+
+| 步骤 | 脚本 | 做什么 |
+|---|---|---|
+| `Run` | `common/execute.sh` | 执行 `index.py`，用 `tee` 把输出**同时**写进日志和 `<项目目录>/output.log`（日志仍实时可见） |
+| `Job Summary` | `common/render-summary.sh` | 读取 `output.log`，包成 Markdown 写进 `$GITHUB_STEP_SUMMARY`，显示在 run 的 Summary 页 |
+
+对应的 workflow 片段：
+
+```yaml
+- name: Run
+  run: bash common/execute.sh
+
+- name: Job Summary
+  if: always()          # 失败时也要把已产生的输出带出来
+  env:
+    SUMMARY_TITLE: GLaDOS 签到
+  run: bash common/render-summary.sh
+```
+
+Summary 页顶部会出现「GLaDOS 签到」标题 + 一个**默认展开**的「完整输出（N 行）」折叠块，内容是 `index.py` 的原始日志。这样不用点进日志 Tab，在 run 列表页就能直接看到输出。
+
+**设计要点：**
+
+| 点 | 说明 |
+|---|---|
+| 业务脚本零耦合 | `index.py` 完全不知道 GitHub Actions 的存在，本地与 CI 行为一致 |
+| 通用 | 任何项目只要经 `execute.sh` 执行，就能用 `render-summary.sh` 出摘要 |
+| 失败也有摘要 | 独立 step + `if: always()`，`Run` 失败时已产生的输出不会丢 |
+| 本地静默跳过 | 没有 `GITHUB_STEP_SUMMARY` 时直接跳过，不报错 |
+
+`output.log` 已加入 `.gitignore`。
+
 ### 配置自检
 
 `common/check-secrets.sh` 会输出一张自检表，**并按类型采用不同展示方式**：
@@ -298,9 +333,10 @@ python index.py
 | 文件 | 作用 |
 |---|---|
 | `python/glados_checkin/index.py` | 入口脚本 |
-| `python/glados_checkin/logging_config.py` | 日志初始化（stdout，格式见上） |
+| `python/glados_checkin/logging_config.py` | 日志初始化（stdout，UTF-8，格式见上） |
 | `.github/workflows/glados_checkin.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 依赖安装 |
 | `common/check-secrets.sh` | 配置自检（secrets 输出指纹、variables 输出明文） |
-| `common/execute.sh` | 按入口扩展名执行 |
+| `common/execute.sh` | 按入口扩展名执行，输出同时写入日志和 `output.log` |
+| `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |

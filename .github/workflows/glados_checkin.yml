@@ -79,3 +79,11 @@ jobs:
 
       - name: Run
         run: bash common/execute.sh
+
+      # 把 Run 的输出重新渲染到 Job Summary。
+      # if: always()：即使 Run 失败，也要把已产生的输出带出来
+      - name: Job Summary
+        if: always()
+        env:
+          SUMMARY_TITLE: GLaDOS 签到
+        run: bash common/render-summary.sh
