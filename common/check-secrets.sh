@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# secrets 自检：输出「是否为空 / 位数 / HMAC 指纹」，绝不输出明文。
+# secrets / variables 自检：输出「是否为空 / 位数 / HMAC 指纹」，绝不输出明文。
 #
 # 为什么不用 MD5：
 #   仓库若是公开的，Actions 日志任何人都能读。裸 MD5 等于公开一个验证预言机，
@@ -8,7 +8,7 @@
 #   「同一 secret 在不同运行 / 不同 Environment 之间是否一致」的比对。
 #
 # 输入环境变量：
-#     SECRET_NAMES             空格分隔的 secret 名称列表（必填）
+#     SECRET_NAMES             空格分隔的待检查名称列表（secrets + variables 混合，必填）
 #     ENV_NAME                 Environment 名，仅用于显示（可选）
 #     COMMON_FINGERPRINT_KEY   指纹密钥，自身不会被打印（可选，缺失则跳过指纹）
 #     以及 SECRET_NAMES 中每个名字对应的环境变量本身
@@ -23,16 +23,16 @@ env_name="${ENV_NAME:-unknown}"
 
 echo "Environment : $env_name"
 echo
-printf '%-24s %-7s %-9s %s\n' "SECRET" "EMPTY" "LENGTH" "FINGERPRINT"
+printf '%-24s %-7s %-9s %s\n' "NAME" "EMPTY" "LENGTH" "FINGERPRINT"
 printf '%-24s %-7s %-9s %s\n' \
        "------------------------" "-------" "---------" "--------------------"
 
 # 同时写一份到 Actions 运行摘要
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
-    echo "### Secrets — \`$env_name\`"
+    echo "### Secrets / Variables — \`$env_name\`"
     echo ""
-    echo "| Secret | Empty | Length | Fingerprint |"
+    echo "| Name | Empty | Length | Fingerprint |"
     echo "|---|---|---|---|"
   } >> "$GITHUB_STEP_SUMMARY"
 fi

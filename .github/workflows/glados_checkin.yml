@@ -44,19 +44,21 @@ jobs:
       PROJECT:   glados_checkin
       ENTRY:     python/glados_checkin/index.py
 
-      # ── 本项目需要的 secret ──
-      # ⚠️ 新增 secret 时，同时把名称加进下面的 SECRET_NAMES。
-      #    未在本环境配置的会解析为空字符串，不会报错。
+      # ── 敏感值 → Environment secrets，用 secrets.* 引用 ──
       GLADOS_COOKIES:         ${{ secrets.GLADOS_COOKIES }}
-      GLADOS_EXCHANGE_PLAN:   ${{ secrets.GLADOS_EXCHANGE_PLAN }}
-      GLADOS_VERBOSE:         ${{ secrets.GLADOS_VERBOSE }}
       PUSHDEER_SENDKEY:       ${{ secrets.PUSHDEER_SENDKEY }}
 
-      # 指纹密钥（仓库级）：只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印
+      # ── 非敏感配置 → Environment variables，用 vars.* 引用 ──
+      #    写错来源（该用 vars 却写了 secrets）会静默解析成空字符串，
+      #    代码里有默认值兜底，所以不会报错但配置不生效。
+      GLADOS_EXCHANGE_PLAN:   ${{ vars.GLADOS_EXCHANGE_PLAN }}
+      GLADOS_VERBOSE:         ${{ vars.GLADOS_VERBOSE }}
+
+      # ── 指纹密钥：仓库级 secret，只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印 ──
       COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
 
-      # 需要校验的 secret 名称，空格分隔
-      SECRET_NAMES: "GLADOS_COOKIES GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE PUSHDEER_SENDKEY"
+      # 需要自检的名称（secrets + variables 混合），空格分隔
+      SECRET_NAMES: "GLADOS_COOKIES PUSHDEER_SENDKEY GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 
     steps:
       - uses: actions/checkout@v4
