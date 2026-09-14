@@ -104,22 +104,28 @@ python/
 
 ### 配置自检与调试开关
 
-workflow 在跑脚本之前会执行 `common/check-secrets.sh`，输出一张表（同时写入 Job Summary）：
+> **自检默认不执行**——这一步会整体跳过，日志里连表都没有。
+> 只有打开下面的调试开关后它才会跑，并输出实际值用于排查。
+
+打开开关后，`common/check-secrets.sh` 会输出这样一张表（同时写入 Job Summary）：
 
 ```
+配置自检（调试模式已开启：DEBUG_MODE=true）
+Environment : python_oracle_abc
+
 NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
 ------------------------ --------- ------- --------- --------------------
 OCI_CLI_KEY_CONTENT      secret    no      1674      a1b2c3d4e5f6
-OCI_SUBNET_ID            variable  no      92        (hidden)
+OCI_SUBNET_ID            variable  no      92        ocid1.subnet.oc1.ap-tokyo-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaa...（已截断）
 ```
 
-| 类型 | 展示内容 | 原因 |
+| 类型 | 展示内容 | 说明 |
 |---|---|---|
 | `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见，指纹可跨环境 / 跨运行比对，且没有密钥无法离线爆破。**无论任何开关都不会打印明文** |
-| `variable` | **`(hidden)`**（只给 空 / 长度） | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，打印等于公开你的标识 |
-| `variable`（调试开关开启后） | 明文值（超 60 字符自动截断） | 排查配置时临时启用，用完请关掉 |
+| `variable` | 明文值（超 60 字符自动截断） | 既然是主动开开关来排查，就直接给值；`LENGTH` 列保留完整长度 |
+| 未开开关 | **什么都不输出** | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，所以默认连表都不打 |
 
-**默认不打印 Variables 的值。** 需要确认实际内容时，打开调试开关**重跑一次**，用完再关掉：
+**要用它，打开调试开关后重跑一次，用完关掉：**
 
 | 开关 | 配在哪 | 作用范围 |
 |---|---|---|
@@ -130,7 +136,7 @@ OCI_SUBNET_ID            variable  no      92        (hidden)
 
 - 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；其余值一律视为关闭
 - **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），因此可以用 `DEBUG_MODE=false` 单独关掉某个已全局开启的环境
-- 两者都没设 → 关闭（fail-closed，默认隐藏）
+- 两者都未设 / 非真值 → **整步跳过**（fail-closed）
 
 > ⚠️ **开关靠 workflow 的 `env:` 桥接才生效**——脚本只认进程环境变量：
 > ```yaml
@@ -307,7 +313,7 @@ Content-Type: application/json
 1. `OCI_CLI_KEY_CONTENT` 是否是**私钥全文**（不是公钥、不是指纹）
 2. `OCI_CLI_FINGERPRINT` 是否和该私钥配对（在 OCI 控制台 My profile → API keys 里核对）
 3. `OCI_CLI_USER` / `OCI_CLI_TENANCY` 是否填反了
-4. 看**配置自检表**（见上方「配置自检与调试开关」）：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上。要确认 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 有没有填反，打开 `DEBUG_MODE` 后重跑即可看到明文
+4. 打开 `DEBUG_MODE` 后重跑（见上方「配置自检与调试开关」），看自检表：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上；同时能直接看到 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 的实际值，确认有没有填反
 
 > 报错信息形如 `OCI 调用失败：[401] NotAuthenticated — ...`，`[403] NotAuthorizedOrNotFound` 通常是权限或 OCID 填错。
 
