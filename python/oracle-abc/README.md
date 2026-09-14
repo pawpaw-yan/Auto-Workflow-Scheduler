@@ -307,6 +307,6 @@ python index.py
 | `.github/workflows/oracle-abc.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 安装依赖（公共 + 项目独有） |
-| `common/check-secrets.sh` | 配置自检（secret 输出指纹、variables 输出明文） |
+| `common/check-secrets.sh` | 配置自检（secrets 输出 HMAC 指纹；variables 默认只输出空/长度，明文受 `DEBUG_MODE` 控制） |
 | `common/execute.sh` | 执行入口，输出同时写入日志和 `output.log` |
 | `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |

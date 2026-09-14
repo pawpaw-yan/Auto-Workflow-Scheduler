@@ -50,7 +50,9 @@ python/
 | `GLADOS_EXCHANGE_PLAN` | `plan500` | `plan100` / `plan200` / `plan500` | 兑换计划 |
 | `GLADOS_VERBOSE` | `false` | `true`/`1`/`yes`/`y`、`false`/`0`/`no`/`n` | 是否输出详细日志 |
 
-> **这两个是非敏感配置，故意放在 Variables 而不是 Secrets**——Variables 在日志里明文可见，排查时能直接确认值有没有生效。
+> **这两个是非敏感配置，放在 Variables 而不是 Secrets**——它们不是凭据，不需要加密存储。
+> 注意：自检表**默认不打印 Variables 的值**（公开仓库的日志任何人可读），只给出「空 / 长度」。
+> 需要看实际内容时，临时打开调试开关重跑（见下方「配置自检 → 调试开关」）。
 >
 > ⚠️ 如果误建成 Secret，或者 workflow 里的引用前缀写错（该用 `vars.` 却写了 `secrets.`），会**静默解析成空字符串**并回退到默认值——**不会报错**。用下面的"验证配置是否生效"一节确认。
 
@@ -232,8 +234,9 @@ GLADOS_VERBOSE           variable  no      4         true
 
 | 类型 | 展示内容 | 原因 |
 |---|---|---|
-| `secret` | HMAC-SHA256 指纹（前 12 位） | 值本身不可见，指纹可以跨环境 / 跨运行比对，且没有密钥无法离线爆破 |
-| `variable` | **明文值** | 本来就是公开配置，直接看值比看指纹直观，指纹对它没有意义 |
+| `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见，指纹可跨环境 / 跨运行比对，且没有密钥无法离线爆破。**无论任何开关都不会打印明文** |
+| `variable` | **`(hidden)`**（只给 空 / 长度） | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，打印等于公开你的标识 |
+| `variable`（调试开关开启后） | 明文值（超 60 字符自动截断） | 排查配置时临时启用，用完请关掉 |
 
 **指纹的用途**：同一 secret 在不同环境里指纹相同 → 配的是同一个值；同一环境跨运行指纹变了 → 说明有人改过这个 secret。
 
@@ -245,6 +248,30 @@ VARIABLE_NAMES: "GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 ```
 
 > 新增配置项时，记得同时把名字加到对应的这一类里，否则不会被自检。
+
+### 调试开关：临时查看明文
+
+默认不打印 Variables 的值。需要确认实际内容时，打开调试开关**重跑一次**，用完关掉：
+
+| 开关 | 配在哪 | 作用范围 |
+|---|---|---|
+| `DEBUG_MODE` | **Environment `python_glados_checkin` → Variables** | **只影响本项目** |
+| `COMMON_DEBUG_MODE` | **仓库级 Variables**（Settings → Secrets and variables → Actions → Variables） | 影响所有项目 |
+
+判定规则：
+
+- 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；其余值一律视为关闭
+- **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），因此可以用 `DEBUG_MODE=false` 单独关掉某个已全局开启的环境
+- 两者都没设 → 关闭（fail-closed，默认隐藏）
+
+> ⚠️ **开关靠 workflow 的 `env:` 桥接才生效**——脚本只认进程环境变量：
+> ```yaml
+> DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
+> COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
+> ```
+> **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
+>
+> ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。它只决定「要不要把它们写进公开日志」。
 
 ---
 
@@ -323,7 +350,7 @@ python index.py
 | 现象 | 含义 |
 |---|---|
 | `EMPTY` 为 `yes`、`LENGTH` 为 `0` | **没注入成功**——没建、名字拼错、或引用前缀写错 |
-| `variable` 行显示明文值（如 `plan500`、`true`） | 注入成功，显示的就是生效值 |
+| `variable` 行 `LENGTH` 大于 0 | 注入成功（默认只显示 `(hidden)`；打开 `DEBUG_MODE` 后可看到实际值） |
 | `secret` 行有 12 位指纹 | 注入成功（值不可见，只能靠指纹比对是否被改过） |
 
 **方法二**：看 Python 启动日志，这几行**不受 verbose 影响**，一定输出，直接打印最终生效值：
@@ -344,6 +371,6 @@ python index.py
 | `.github/workflows/glados_checkin.yml` | 项目 workflow |
 | `.github/workflows/run-project.yml` | 总入口，按参数派发 |
 | `common/install-deps.sh` | 依赖安装 |
-| `common/check-secrets.sh` | 配置自检（secrets 输出指纹、variables 输出明文） |
+| `common/check-secrets.sh` | 配置自检（secrets 输出 HMAC 指纹；variables 默认只输出空/长度，明文受 `DEBUG_MODE` 控制） |
 | `common/execute.sh` | 按入口扩展名执行，输出同时写入日志和 `output.log` |
 | `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |

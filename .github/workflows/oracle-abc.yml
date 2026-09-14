@@ -96,7 +96,21 @@ jobs:
       # 可选：每个 OCPU 配多少内存 GB。不设则沿用 MEMORY / OCPU 的比例
       # MEMORY_PER_OCPU: ${{ vars.MEMORY_PER_OCPU }}
 
-      # 自检：secret 只输出 HMAC 指纹，variables 输出明文值
+      # ── 指纹密钥：仓库级 secret，只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印 ──
+      #    （此前本项目漏了这行，导致指纹列一直显示 (skip: no key)）
+      COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
+
+      # ── 配置自检的调试开关（两级，Environment 覆盖仓库级）──
+      #   DEBUG_MODE          当前 Environment 的开关：只想看本项目明文时设它
+      #   COMMON_DEBUG_MODE   仓库级全局开关：所有项目一起打开
+      # 未设置 → 展开为空字符串 → 脚本按「关闭 / 回落到另一级」处理（默认隐藏明文）。
+      # ⚠️ 这两行必须存在：脚本只认进程环境变量，GitHub 上的 Variables 靠这两行桥接，
+      #    漏了就会出现「在 GitHub 设了开关但没生效」。
+      DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
+      COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
+
+      # 自检：secrets 只输出 HMAC 指纹（永不打印明文）；
+      #       variables 默认只输出「空 / 长度」，调试开关开启后才输出明文值
       SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
       VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCI_SSH_PUBLIC_KEY OCPU MEMORY TARGET"
 
