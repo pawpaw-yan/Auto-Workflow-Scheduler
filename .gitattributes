@@ -1,0 +1,2 @@
+# shell 脚本强制 LF：Windows 上编辑后若带 CRLF，推到 Linux runner 会因 \r 报错
+*.sh text eol=lf
