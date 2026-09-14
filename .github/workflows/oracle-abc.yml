@@ -77,14 +77,18 @@ jobs:
       #   TARGET  升级的最终目标 OCPU 数
       #
       # 例：OCPU=1  MEMORY=6  TARGET=4
-      #   → 抢 1c6g，然后逐步升级 2c12 → 3c18 → 4c24
+      #   → 抢 1c6g，然后分步升级 2c12g → 4c24g（跳过 3c18g）
       #   → 每轮升完都重新判断，达到 TARGET 才结束
+      #   → 每轮放大倍数由 STEP_FACTOR 控制，默认 ×2
       #
       # 留空则用脚本内默认值（抢 1c6g、目标 2c）
       # ─────────────────────────────────────────────────────────────
       GRAB_OCPUS:     ${{ vars.OCPU }}
       GRAB_MEMORY_GB: ${{ vars.MEMORY }}
       TARGET_OCPUS:   ${{ vars.TARGET }}
+
+      # 可选：每轮放大倍数，默认 2（翻倍：1c→2c→4c）。设为 1 则逐级 +1
+      # STEP_FACTOR:     ${{ vars.STEP_FACTOR }}
 
       # 可选：每个 OCPU 配多少内存 GB。不设则沿用 MEMORY / OCPU 的比例
       # MEMORY_PER_OCPU: ${{ vars.MEMORY_PER_OCPU }}

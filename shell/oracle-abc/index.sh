@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════
-# oracle-abc —— 抢占 OCI Ampere A1 实例并逐步升级规格
+# oracle-abc —— 抢占 OCI Ampere A1 实例并分步升级规格
 #
 # 流程（幂等，可反复执行）：
 #   1. 按 display-name 查找实例
@@ -9,15 +9,19 @@
 #   3. 存在   → 进入升级循环：
 #                ┌─ 读当前 OCPU
 #                │  已达到 TARGET → 结束
-#                │  否则 → 停止 → 升级到「当前 +1」→ 启动
+#                │  否则 → 停止 → 升级到「当前 ×STEP_FACTOR」→ 启动
 #                └─ 升级成功后立刻回到开头重新判断
 #
-#   例：OCPU=1 TARGET=4，则依次升到 2 → 3 → 4，每次升级完都重新判断。
-#       逐步 +1 而不是一次跳到位，是为了让每一步都有独立的成功机会。
+#   例：OCPU=1 TARGET=4，默认 STEP_FACTOR=2，升级路径为
+#         1c/6g  →  2c/12g  →  4c/24g        （跳过 3c/18g）
+#       每升一轮都重新判断，达到 TARGET 才结束。
+#
+#   分步升级而不是一次跳到位，是为了让每一步都有独立的成功机会；
+#   如果某一步失败，至少还能停在上一档已经成功的规格上。
 #
 # 退出码：
 #   0  成功；或「没有容量，稍后重试」这类预期内结果
-#   1  真正的错误（配置缺失、认证失败、OCI 调用异常）
+#   1  真正的错误（配置缺失、认证失败、OCI 调用异常、升级未生效）
 #
 # 依赖：oci CLI、jq
 #
@@ -37,6 +41,10 @@ GRAB_OCPUS="${GRAB_OCPUS:-1}"          # 抢占时申请的 OCPU 数（越小越
 GRAB_MEMORY_GB="${GRAB_MEMORY_GB:-6}"  # 抢占时申请的内存
 
 TARGET_OCPUS="${TARGET_OCPUS:-2}"      # 升级的最终目标 OCPU 数
+
+# 每轮升级的放大倍数。默认 2 → 1c/2c/4c/8c…（1→2→4 会跳过 3）
+# 设为 1 则退化成逐级 +1（1→2→3→4）
+STEP_FACTOR="${STEP_FACTOR:-2}"
 
 INSTANCE_NAME="${OCI_INSTANCE_NAME:-oracle-abc}"
 BOOT_VOLUME_GB="${OCI_BOOT_VOLUME_GB:-50}"
@@ -64,18 +72,28 @@ need_positive_int() {
   [ "$value" -gt 0 ] || die "$name 必须大于 0，当前值：$value"
 }
 
+# 计算从 from 升到 target 的下一档（保证一定前进，且不超过 target）
+next_step() {
+  local from="$1" target="$2" nxt
+  nxt=$(( from * STEP_FACTOR ))
+  [ "$nxt" -le "$from" ] && nxt=$(( from + 1 ))   # 防止 STEP_FACTOR=1 时原地打转
+  [ "$nxt" -gt "$target" ] && nxt="$target"       # 不越过目标
+  echo "$nxt"
+}
+
 # ─────────────────────────── 前置检查 ───────────────────────────
 command -v oci >/dev/null 2>&1 || die "未找到 oci CLI，请先安装（pip install oci-cli）"
 command -v jq  >/dev/null 2>&1 || die "未找到 jq"
 
 need OCI_COMPARTMENT_ID
 
-need_positive_int GRAB_OCPUS      "$GRAB_OCPUS"
-need_positive_int GRAB_MEMORY_GB  "$GRAB_MEMORY_GB"
-need_positive_int TARGET_OCPUS    "$TARGET_OCPUS"
+need_positive_int GRAB_OCPUS     "$GRAB_OCPUS"
+need_positive_int GRAB_MEMORY_GB "$GRAB_MEMORY_GB"
+need_positive_int TARGET_OCPUS   "$TARGET_OCPUS"
+need_positive_int STEP_FACTOR    "$STEP_FACTOR"
 
 # 每个 OCPU 配多少内存。默认沿用抢占时的比例（如 1c6g → 每 OCPU 6GB），
-# 于是升级路径为 2c12g → 3c18g → 4c24g。可用 MEMORY_PER_OCPU 显式覆盖。
+# 于是 2c 配 12GB、4c 配 24GB。可用 MEMORY_PER_OCPU 显式覆盖。
 # 放在校验之后计算，避免非法输入直接让算术表达式报错。
 if [ -n "${MEMORY_PER_OCPU:-}" ]; then
   need_positive_int MEMORY_PER_OCPU "$MEMORY_PER_OCPU"
@@ -84,10 +102,23 @@ else
   [ "$MEMORY_PER_OCPU" -gt 0 ] || MEMORY_PER_OCPU=1
 fi
 
+# 预览升级路径（仅用于日志，方便一眼核对配置是否符合预期）
+preview="${GRAB_OCPUS}c"
+prev="$GRAB_OCPUS"
+cur="$GRAB_OCPUS"
+for _ in $(seq 1 32); do
+  [ "$cur" -ge "$TARGET_OCPUS" ] && break
+  cur=$(next_step "$prev" "$TARGET_OCPUS")
+  preview="$preview → ${cur}c"
+  prev="$cur"
+done
+
 log "════════ oracle-abc 启动 ════════"
 log "实例名        : $INSTANCE_NAME"
 log "抢占规格      : ${GRAB_OCPUS} OCPU / ${GRAB_MEMORY_GB} GB"
 log "升级目标      : ${TARGET_OCPUS} OCPU"
+log "放大倍数      : ×${STEP_FACTOR}"
+log "升级路径      : $preview"
 log "每 OCPU 内存  : ${MEMORY_PER_OCPU} GB"
 log "Shape         : $SHAPE"
 log "区域          : ${OCI_CLI_REGION:-（未设置，将读 ~/.oci/config）}"
@@ -160,8 +191,8 @@ fi
 log "  instance-id = $instance_id"
 echo
 
-# ───────────────────── 步骤 3：逐步升级到 TARGET ─────────────────────
-log "步骤 3/3  逐步升级到 ${TARGET_OCPUS} OCPU（每轮 +1）"
+# ───────────────────── 步骤 3：分步升级到 TARGET ─────────────────────
+log "步骤 3/3  分步升级到 ${TARGET_OCPUS} OCPU（每轮 ×${STEP_FACTOR}）"
 
 if [ "$GRAB_OCPUS" -ge "$TARGET_OCPUS" ]; then
   log "  抢占规格($GRAB_OCPUS) 已达/超过目标($TARGET_OCPUS)，无需升级"
@@ -197,12 +228,11 @@ while true; do
     break
   fi
 
-  # ── 本轮升级到「当前 + 1」，且不超过目标 ──
-  next_ocpus=$(( cur_ocpus + 1 ))
-  [ "$next_ocpus" -gt "$TARGET_OCPUS" ] && next_ocpus=$TARGET_OCPUS
+  # ── 本轮升级到「当前 × STEP_FACTOR」，且不超过目标 ──
+  next_ocpus=$(next_step "$cur_ocpus" "$TARGET_OCPUS")
   next_memory=$(( next_ocpus * MEMORY_PER_OCPU ))
 
-  log "  升级 ${cur_ocpus} → ${next_ocpus} OCPU / ${next_memory} GB"
+  log "  升级 ${cur_ocpus}c → ${next_ocpus}c（${next_memory} GB）"
 
   if [ "$cur_state" != "STOPPED" ]; then
     log "    停止实例（$STOP_ACTION，等待 STOPPED，最长 15 分钟）"
