@@ -1,9 +1,11 @@
 name: Hello Cron
 
 on:
-  # 每 5 分钟执行一次（UTC 时间，cron 最小间隔为 5 分钟）
+  # 每小时的第 10 分钟执行一次
+  # 注意：GitHub cron 使用 UTC 时间。北京时间 = UTC+8，整点偏移不改变分钟位，
+  # 所以 "10 * * * *" 在 UTC 和北京时间下同样都是「每小时的第 10 分钟」
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "10 * * * *"
   # 允许在 Actions 页面手动触发，方便调试
   workflow_dispatch:
 
