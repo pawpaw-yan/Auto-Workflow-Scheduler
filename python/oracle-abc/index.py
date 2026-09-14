@@ -59,7 +59,11 @@ try:
         UpdateInstanceDetails,
         UpdateInstanceShapeConfigDetails,
     )
-    from oci.exceptions import ServiceError, WaiterError
+    from oci.exceptions import (
+        CompositeOperationError,
+        MaximumWaitTimeExceeded,
+        ServiceError,
+    )
 except ImportError as exc:
     print(
         f"::error::缺少依赖 oci（{exc}）；"
@@ -309,7 +313,7 @@ def try_launch(composite: ComputeClientCompositeOperations, settings: SimpleName
             logger.info("  OCI 返回：[%s] %s — %s", exc.status, exc.code, exc.message)
             return None
         raise
-    except WaiterError as exc:
+    except MaximumWaitTimeExceeded as exc:
         die(f"实例已受理但未在 {WAIT_MAX_SECONDS}s 内进入 {LIFECYCLE_RUNNING}：{exc}（下次运行会重新发现它）")
 
 
@@ -492,8 +496,10 @@ if __name__ == "__main__":
         raise
     except ServiceError as exc:
         die(f"OCI 调用失败：[{exc.status}] {exc.code} — {exc.message}")
-    except WaiterError as exc:
+    except MaximumWaitTimeExceeded as exc:
         die(f"等待实例状态超时（上限 {WAIT_MAX_SECONDS}s）：{exc}")
+    except CompositeOperationError as exc:
+        die(f"OCI 复合操作失败（work request 未成功）：{exc}")
     except Exception:  # noqa: BLE001 - 兜底：任何未预期异常都必须让 job 变红
         traceback.print_exc()
         die("执行过程中出现未预期的错误，详见上方堆栈")
