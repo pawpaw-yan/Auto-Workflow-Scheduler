@@ -1,0 +1,24 @@
+name: Hello Cron
+
+on:
+  # 每 5 分钟执行一次（UTC 时间，cron 最小间隔为 5 分钟）
+  schedule:
+    - cron: "*/5 * * * *"
+  # 允许在 Actions 页面手动触发，方便调试
+  workflow_dispatch:
+
+# 同一时间只保留一个运行中的任务，避免排队堆积
+concurrency:
+  group: hello-cron
+  cancel-in-progress: false
+
+jobs:
+  hello:
+    name: Echo Hello Cron
+    runs-on: ubuntu-latest
+    # 默认权限最小化，按需在具体步骤中提升
+    permissions:
+      contents: read
+    steps:
+      - name: Run echo
+        run: echo "Hello Cron!"
