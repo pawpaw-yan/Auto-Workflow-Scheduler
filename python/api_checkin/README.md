@@ -156,8 +156,17 @@ JSON 适合**派发**（`workflow_dispatch` 的 input 只有字符串通道）�
   粘过一次之后就不会再被自动读取覆盖
 - ⚠️ **Cookie 读不到就是真读不到**：`httpOnly` 是浏览器强制的，JS 无论如何都拿不到 ——
   **iframe 也不行**（换任何 frame 都是同一个作用域，`document.cookie` 里永远没有它）。
-  唯一的出口是浏览器的 cookie 接口，也就是 `GM_cookie`；它没被授权就只能从 F12 → Network 复制。
-  所以**能用访问令牌就别折腾 Cookie** —— 令牌不会过期
+  唯一的出口是篡改猴的浏览器 cookie 接口（`GM_cookie`，Beta 版是 `GM.cookie`），前提有两条：
+
+  | 前提 | 怎么满足 |
+  |---|---|
+  | 允许脚本访问 Cookie | 篡改猴 → **设置** → 「通用 → 配置模式」改成 **高级**；再到「**安全 → 允许脚本访问 Cookie**」选 **全部**，保存后**刷新页面** |
+  | 读得到 `httpOnly` | ⚠️ 官方文档原文：*httpOnly cookies are supported at the **BETA** versions of Tampermonkey only for now* —— **正式版读不到**，要换 Beta（商店里叫「篡改猴测试版」） |
+
+  卡片里有一行 **GM_cookie 状态**，会直接说明卡在哪一步（没启用 / 调用失败 / 返回空 / 超时等），
+  没启用时还会**自动展开**「怎么开启 GM_cookie」的分步指引。
+
+  所以**能用访问令牌就别折腾 Cookie** —— 令牌不会过期，也没有这些限制
 
 - **令牌会被真的验证**：用 `credentials:'omit'`（不带会话 cookie）单独发一次请求，
   免得被浏览器会话「救活」造成假阳性 —— 验证过了才是真能用；失败会**带上原因**（如 `HTTP 401 …`）

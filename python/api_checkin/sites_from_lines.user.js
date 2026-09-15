@@ -613,28 +613,95 @@
   }
 
   /**
-   * 尽量凑出 Cookie 请求头。
-   * document.cookie 拿不到 httpOnly 的会话 cookie，而 new-api 的 session 通常正是 httpOnly ——
-   * GM_cookie 走的是浏览器 cookie 接口，能读到；没有权限或不被支持时退回 document.cookie。
+   * 尽量凑出 Cookie 请求头，并把「GM_cookie 为什么用不了」一并带回去 —— 光说「读不到」
+   * 没法让人修，得说清是没声明、没开权限、还是版本不支持。
+   *
+   * document.cookie 拿不到 httpOnly 的会话 cookie：这是浏览器强制的，任何 JS 都读不到，
+   * **换 iframe 也一样**（同源 frame 的 document.cookie 里同样没有它）。
+   * 唯一出路是篡改猴的浏览器 cookie 接口。两条硬性前提：
+   *
+   *   1. 篡改猴设置里「安全 → 允许脚本访问 Cookie」必须是「全部」
+   *   2. ⚠️ 官方文档原文：httpOnly cookies are supported at the BETA versions of
+   *      Tampermonkey only for now —— **正式版读不到 httpOnly**，只能换 Beta。
+   *      另外它要求脚本对目标 URL 有 @match / @include 权限（本脚本声明的是全站匹配，已满足）。
    */
   function readCookieHeader() {
-    return new Promise((resolve) => {
-      const fallback = () => resolve({ text: document.cookie || "", source: "document" });
+    const fromDocument = {
+      text: document.cookie || "",
+      source: "document",
+      gmState: "missing",
+      gmDetail: "",
+    };
 
-      if (typeof GM_cookie !== "undefined" && GM_cookie && typeof GM_cookie.list === "function") {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+      const failed = (state, detail) => Object.assign({}, fromDocument, { gmState: state, gmDetail: detail });
+
+      const useCookies = (cookies) => {
+        if (!cookies || !cookies.length) {
+          done(failed("empty", "能调用，但这条 URL 下没返回任何 cookie"));
+          return;
+        }
+        done({
+          text: cookies.map((c) => c.name + "=" + c.value).join("; "),
+          source: "GM_cookie",
+          gmState: "ok",
+          gmDetail: "拿到 " + cookies.length + " 条 cookie",
+        });
+      };
+
+      // 新版（BETA）是 Promise 风格：GM.cookie
+      if (typeof GM !== "undefined" && GM && GM.cookie && typeof GM.cookie.list === "function") {
         try {
-          GM_cookie.list({ url: location.href }, (cookies, error) => {
-            if (error || !cookies || !cookies.length) { fallback(); return; }
-            resolve({
-              text: cookies.map((c) => c.name + "=" + c.value).join("; "),
-              source: "GM_cookie",
-            });
+          GM.cookie.list({ url: location.href }).then(useCookies, (err) => {
+            done(failed("error", "GM.cookie.list 报错：" + String((err && err.message) || err)));
           });
           return;
-        } catch (e) { /* 没授权 / 不支持，落回 document.cookie */ }
+        } catch (e) {
+          done(failed("error", "调用 GM.cookie 抛异常：" + String((e && e.message) || e)));
+          return;
+        }
       }
-      fallback();
+
+      // 老版是回调风格：GM_cookie
+      if (typeof GM_cookie === "undefined" || !GM_cookie || typeof GM_cookie.list !== "function") {
+        done(failed("missing", "脚本环境里没有 GM_cookie —— 没声明 @grant，或这个篡改猴版本不支持"));
+        return;
+      }
+
+      // 权限没给时回调可能永远不来，兜一个超时，免得卡片一直停在「正在读取」
+      setTimeout(() => done(failed("timeout", "GM_cookie.list 3 秒内没有回调")), 3000);
+
+      try {
+        GM_cookie.list({ url: location.href }, (cookies, error) => {
+          if (error) {
+            done(failed("error", "GM_cookie.list 报错：" + String((error && error.message) || error)));
+            return;
+          }
+          useCookies(cookies);
+        });
+      } catch (e) {
+        done(failed("error", "调用 GM_cookie 抛异常：" + String((e && e.message) || e)));
+      }
     });
+  }
+
+  /** GM_cookie 的状态 → 一句人话，好让人知道该去改什么 */
+  function gmStateLabel(state) {
+    switch (state.gmState) {
+      case "ok":
+        return "✅ 已启用（" + state.gmDetail + "）";
+      case "missing":
+        return "⛔ 没启用 —— 展开下面的「怎么开启 GM_cookie」按步骤设置一次";
+      case "error":
+        return "⚠️ 调用失败：" + state.gmDetail;
+      case "empty":
+      case "timeout":
+        return "⚠️ " + state.gmDetail;
+      default:
+        return "—";
+    }
   }
 
   /** 从站点侧收集：站点、账号、cookie、令牌列表。userId 用于 localStorage 读不到时手动兜底 */
@@ -649,6 +716,8 @@
       sessionVisible: false,
       accessToken: "",
       userFields: [],
+      gmState: "missing",
+      gmDetail: "",
       errors: [],
     };
 
@@ -667,6 +736,8 @@
     const cookie = await readCookieHeader();
     result.cookie = cookie.text;
     result.cookieSource = cookie.source;
+    result.gmState = cookie.gmState;
+    result.gmDetail = cookie.gmDetail;
 
     const me = await api("/api/user/self");
     if (!me || me.success !== true || !me.data) {
@@ -860,13 +931,13 @@
         ["账号", "#" + (me.id || "?") + " " + (me.username || me.display_name || "")],
         ["版本", (state.status && (state.status.version || state.status.system_name)) || "?"],
         ["会话", "✅ 有效（已用 /api/user/self 验证）"],
+        ["GM_cookie", gmStateLabel(state)],
         ["Cookie", state.sessionVisible
           ? "✅ 读到会话 cookie（来源 " + state.cookieSource + "，" + cookieCount + " 条）"
           : cookieCount
-            ? "⚠️ 只读到 " + cookieCount + " 条非会话 cookie（来源 " + state.cookieSource + "）；"
-              + "会话 cookie 是 httpOnly 读不到 —— 要用 cookie 认证请按 F12 → Network 复制 Cookie 头"
-            : "⛔ 一条 cookie 都读不到（来源 " + state.cookieSource + "）。new-api 的会话 cookie 是 httpOnly，"
-              + "脚本拿不到 —— 请按 F12 → Network 复制 Cookie 头，或直接用上面的令牌"],
+            ? "⚠️ 只读到 " + cookieCount + " 条非会话 cookie（来源 " + state.cookieSource
+              + "）；会话 cookie 是 httpOnly —— 见上面 GM_cookie 那一行"
+            : "⛔ 一条 cookie 都读不到（来源 " + state.cookieSource + "）—— 见上面 GM_cookie 那一行"],
       ];
       rows.forEach((row) => {
         info.appendChild(el("div", { class: "acs-kv" }, [
@@ -883,6 +954,13 @@
       }
       const fieldsCell = body.querySelector("[data-acs-userfields]");
       if (fieldsCell) fieldsCell.textContent = state.userFields.join(", ") || "（没拿到字段名）";
+
+      // GM_cookie 没问题就把开启指引收起来，不占地方
+      const gmGuide = body.querySelector("[data-acs-gmguide]");
+      if (gmGuide) {
+        if (state.gmState === "ok") gmGuide.removeAttribute("open");
+        else gmGuide.setAttribute("open", "open");
+      }
     }
 
     async function load() {
@@ -1015,6 +1093,26 @@
       el("summary", { text: "API 密钥（sk- 开头，调用模型用 —— api_checkin 用不上）" }),
       el("div", { class: "acs-row", style: "margin-top:8px" }, [tokenSelect, createBtn, deleteBtn]),
       el("p", { class: "acs-hint", text: "这一组走 /api/token/，就是站点「密钥管理」页里的东西；有的版本只返回掩码（含 *），拿不到明文。" }),
+    ]));
+
+    body.appendChild(el("details", { style: "margin-top:10px", "data-acs-gmguide": "1" }, [
+      el("summary", { text: "怎么开启 GM_cookie（读 httpOnly 会话 cookie 的唯一办法）" }),
+      el("pre", {
+        class: "acs-hint",
+        style: "white-space:pre-wrap;margin:8px 0 0",
+        text: [
+          "1. 脚本头部已经有 `// @grant GM_cookie` —— 这条不用你动。",
+          "2. 点工具栏的篡改猴图标 → 管理面板 → 「设置」。",
+          "3. 「通用 → 配置模式」从「新手」改成「高级」—— Cookie 开关只在高级模式下出现。",
+          "4. 「安全 → 允许脚本访问 Cookie」选「全部」，然后点页面底部保存。",
+          "5. ⚠️ 官方文档写明：httpOnly cookies are supported at the BETA versions of",
+          "   Tampermonkey only for now —— 也就是**正式版照样读不到**会话 cookie，",
+          "   要用得换成 Beta（商店里叫「篡改猴测试版」）。",
+          "6. 改完刷新本页（脚本要重新运行才会拿到权限），回来点上面的「重试」。",
+          "7. 还是读不到，就是这条路在你的浏览器上走不通 —— 直接用访问令牌，",
+          "   或 F12 → Network 复制 Cookie 头粘进下面的框。",
+        ].join("\n"),
+      }),
     ]));
 
     body.appendChild(el("details", { style: "margin-top:10px" }, [
