@@ -554,6 +554,26 @@
     return "";
   }
 
+  /**
+   * 把 user 对象里**所有**像访问令牌的字段捞出来（字段名各版本不一：access_token /
+   * accessToken / token / 甚至别的），交给调用方逐个真发请求去挑 —— 不猜字段名。
+   * 太短的值（<8 字符）多半是名称、状态之类，丢掉。
+   */
+  function tokenCandidates(user) {
+    const found = [];
+    if (!user || typeof user !== "object") return found;
+
+    Object.keys(user).forEach((key) => {
+      if (!/token/i.test(key)) return;
+      const value = user[key];
+      if (typeof value !== "string") return;
+      const trimmed = value.trim();
+      if (trimmed.length < 8) return;
+      if (!found.some((item) => item.value === trimmed)) found.push({ key: key, value: trimmed });
+    });
+    return found;
+  }
+
   async function api(path, options) {
     const opts = options || {};
     const headers = Object.assign(
@@ -707,6 +727,7 @@
       cookieSource: "document",
       sessionVisible: false,
       accessToken: "",
+      tokenCandidates: [],
       userFields: [],
       gmState: "missing",
       gmDetail: "",
@@ -741,8 +762,15 @@
     if (result.me.id) currentUserId = String(result.me.id);   // 以服务端返回的为准
 
     // 「系统访问令牌」：先看 /api/user/self，再退回前端缓存的 user 对象
-    result.accessToken = accessTokenFromUser(result.me) || accessTokenFromUser(userFromLocalStorage());
+    const localUser = userFromLocalStorage();
+    result.accessToken = accessTokenFromUser(result.me) || accessTokenFromUser(localUser);
     result.userFields = Object.keys(result.me);   // 诊断用：字段名不确定时看这个
+
+    // 字段名各版本不一，所以把两边的候选都收着，由验证环节去挑真正能用的那个
+    result.tokenCandidates = tokenCandidates(result.me).concat(tokenCandidates(localUser));
+    result.tokenCandidates = result.tokenCandidates.filter((item, index, all) => {
+      return all.findIndex((other) => other.value === item.value) === index;
+    });
 
     result.sessionVisible = /(^|;\s*)(session|new-api-session)=/.test(result.cookie);
     return result;
@@ -861,8 +889,30 @@
     async function verifyAccess() {
       const verifyCell = info.querySelector("[data-acs-token-verify]");
       const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
+      const userId = (state && state.me) ? state.me.id : currentUserId;
 
       refreshValues();
+
+      // 字段名各版本不一：把 user 对象里所有 token 字段逐个**真发请求**去挑，谁能过就用谁
+      if (!accessTokenField.value.trim() && state && state.tokenCandidates.length) {
+        const names = state.tokenCandidates.map((item) => "`" + item.key + "`").join("、");
+        setVerify("在 " + names + " 里找可用的访问令牌…");
+
+        for (let i = 0; i < state.tokenCandidates.length; i++) {
+          const candidate = state.tokenCandidates[i];
+          if (await verifyToken(candidate.value, userId)) continue;   // 非空 = 没通过，试下一个
+          accessTokenField.value = candidate.value;
+          delete accessTokenField.dataset.acsManual;
+          state.accessToken = candidate.value;
+          setVerify("✅ 从字段 `" + candidate.key + "` 找到并验证通过");
+          return;
+        }
+
+        setVerify("⚠️ 这些字段都试了但没一个通过：" + names
+          + "。说明访问令牌可能压根没下发给前端 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框，或点「♻ 重新生成」");
+        return;
+      }
+
       const key = accessTokenField.value.trim();
       if (!key) {
         setVerify("⚠️ 没读到系统访问令牌（个人设置 → 安全设置 → 系统访问令牌）；可复制后粘进下面的框，或点「♻ 重新生成」");
@@ -870,7 +920,7 @@
       }
 
       setVerify("正在验证系统访问令牌…");
-      const reason = await verifyToken(key, state ? state.me.id : currentUserId);
+      const reason = await verifyToken(key, userId);
       if (!reason) setVerify("✅ 系统访问令牌已验证可用");
       else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过：" + reason);
       else setVerify("⚠️ 系统访问令牌验证没通过：" + reason);
@@ -912,6 +962,13 @@
       }
       const fieldsCell = body.querySelector("[data-acs-userfields]");
       if (fieldsCell) fieldsCell.textContent = state.userFields.join(", ") || "（没拿到字段名）";
+
+      const candCell = body.querySelector("[data-acs-candidates]");
+      if (candCell) {
+        candCell.textContent = state.tokenCandidates.length
+          ? state.tokenCandidates.map((item) => item.key).join(", ")
+          : "（user 对象里没有任何「名字带 token 的字符串字段」）";
+      }
     }
 
     async function load() {
@@ -1014,9 +1071,11 @@
     ]));
 
     body.appendChild(el("details", { style: "margin-top:10px" }, [
-      el("summary", { text: "诊断：/api/user/self 返回的字段名" }),
-      el("p", { class: "acs-hint", text: "「访问令牌」为空时把下面这行发我 —— 可能这个版本的字段名不叫 access_token。" }),
+      el("summary", { text: "诊断：为什么读不到访问令牌" }),
+      el("p", { class: "acs-hint", text: "/api/user/self 返回的全部字段名：" }),
       el("p", { class: "acs-hint" }, [el("code", { "data-acs-userfields": "1", text: "（读取后填上）" })]),
+      el("p", { class: "acs-hint", text: "其中被判为「访问令牌候选」的字段（这些会被逐个真发请求验证）：" }),
+      el("p", { class: "acs-hint" }, [el("code", { "data-acs-candidates": "1", text: "（读取后填上）" })]),
     ]));
 
     body.appendChild(el("p", { class: "acs-hint", text: "要把它们变成行格式 / SITES JSON：用菜单里的「SITES JSON」粘一遍（GitHub 派发页也有同一个按钮）。" }));
