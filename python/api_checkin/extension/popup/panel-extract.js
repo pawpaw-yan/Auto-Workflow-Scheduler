@@ -74,7 +74,9 @@ byId("cookieField").addEventListener("change", () => {
   if (extractState) extractState.cookie = byId("cookieField").value.trim();
 });
 
-// 打开面板就自动读当前站点 —— 不用手动点「读取」（读不到会在状态行说明原因）
+//
+
+// Open panel: auto-read the current site (status line explains when the user id is unreadable)
 initDefaultSite().then(() => {
   if (/^https?:\/\//.test(byId("siteInput").value.trim())) loadSite();
 });

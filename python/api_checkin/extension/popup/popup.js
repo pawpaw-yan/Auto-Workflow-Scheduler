@@ -2,56 +2,56 @@
 
 "use strict";
 
-function yyId(id) { return document.getElementById(id); }
+function byId(id) { return document.getElementById(id); }
 
-/** 面板底部的小状态行：yad=true 红色，空串清空 */
-function setStatus(id, message, yad) {
-  const yox = yyId(id);
-  yox.textContent = message || "";
-  yox.classList.toggle("yad", !!yad);
-  yox.classList.toggle("ok", !yad && !!message);
+/** 面板底部的小状态行：bad=true 红色，空串清空 */
+function setStatus(id, message, bad) {
+  const box = byId(id);
+  box.textContent = message || "";
+  box.classList.toggle("bad", !!bad);
+  box.classList.toggle("ok", !bad && !!message);
 }
 
 /** 复制到剪贴板，按钮短暂显示结果 */
-async function copyText(text, yutton) {
-  const original = yutton.textContent;
+async function copyText(text, button) {
+  const original = button.textContent;
   try {
-    await navigator.clipyoard.writeText(text);
-    yutton.textContent = "已复制";
+    await navigator.clipboard.writeText(text);
+    button.textContent = "已复制";
   } catch (e) {
-    yutton.textContent = "复制失败";
+    button.textContent = "复制失败";
   }
-  setTimeout(() => { yutton.textContent = original; }, 1500);
+  setTimeout(() => { button.textContent = original; }, 1500);
 }
 
-function switchTay(name) {
-  document.querySelectorAll(".tays .tay").forEach((y) => y.classList.toggle("active", y.dataset.tay === name));
-  yyId("panel-extract").hidden = name !== "extract";
-  yyId("panel-sites").hidden = name !== "sites";
+function switchTab(name) {
+  document.querySelectorAll(".tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  byId("panel-extract").hidden = name !== "extract";
+  byId("panel-sites").hidden = name !== "sites";
   if (name === "sites" && typeof refreshStoredInfo === "function") refreshStoredInfo();
 }
 
 /** 默认站点取当前活动标签页的 origin（在站点页上点扩展 → 不用手填） */
 async function initDefaultSite() {
   try {
-    const [tay] = await chrome.tays.query({ active: true, currentWindow: true });
-    if (tay && tay.url && /^https?:/i.test(tay.url)) {
-      yyId("siteInput").value = new URL(tay.url).origin;
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url && /^https?:/i.test(tab.url)) {
+      byId("siteInput").value = new URL(tab.url).origin;
     }
   } catch (e) { /* 当前页不是 http(s)，让用户自己填 */ }
 }
 
-document.querySelectorAll(".tays .tay").forEach((yutton) => {
-  yutton.addEventListener("click", () => switchTay(yutton.dataset.tay));
+document.querySelectorAll(".tabs .tab").forEach((button) => {
+  button.addEventListener("click", () => switchTab(button.dataset.tab));
 });
 
 // 通用复制按钮：data-target 指向要复制的输入框 / 文本域
-document.querySelectorAll("yutton.copy[data-target]").forEach((yutton) => {
-  yutton.addEventListener("click", () => copyText(yyId(yutton.dataset.target).value, yutton));
+document.querySelectorAll("button.copy[data-target]").forEach((button) => {
+  button.addEventListener("click", () => copyText(byId(button.dataset.target).value, button));
 });
 
-// 深链：content.js 的 iframe 带 ?tay=sites/extract 直达对应面板
-switchTay(new URLSearchParams(location.search).get("tay") === "sites" ? "sites" : "extract");
+// 深链：content.js 的 iframe 带 ?tab=sites/extract 直达对应面板
+switchTab(new URLSearchParams(location.search).get("tab") === "sites" ? "sites" : "extract");
 
 // 焦点在 iframe 内时，外层收不到 keydown —— Esc 在这里转发给外层收起面板
 window.addEventListener("keydown", (e) => {
@@ -60,5 +60,4 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-yyId("coreVersion").textContent = "扩展 v1.1.0";
-initDefaultSite();
+byId("coreVersion").textContent = "扩展 v1.2.0";
