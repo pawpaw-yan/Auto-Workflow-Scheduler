@@ -28,6 +28,19 @@
 会话有效性（真发请求过 WAF）、访问令牌（`/api/user/self` 的字段 → 候选字段逐个真验证
 → `GET /api/user/token`；掩码形如 `sk-abc1****WXYZ` 的值直接跳过，绝不交给没验证过的值）。
 
+**new-api v1.x 站**（`/api/status` 里 version 是 `v1.*`）：这类站的接口**只认 Bearer 令牌、
+不认会话 cookie**，用 cookie 调管理接口必然 401。面板的处理：
+
+1. 读到名字里带 `refresh` 的 cookie（各 fork 命名不一）就认定是 v1.x，直接走自举；
+   没读到但 cookie 流程撞上 401 / 403 /「access token 无效」时，也会补一次自举。
+2. 自举 = 在**站点自己的标签页里**调 `POST /api/user/auth/refresh`（该端点校验 Origin，
+   从扩展页发会被 `AUTH_ORIGIN_FORBIDDEN` 拒掉），换出短期 access_token。
+3. 拿到短期令牌后立刻去 `GET /api/user/token` 换**长效系统访问令牌** ——
+   填进 SITES 的是这个长效令牌，不是那个会轮换的短期令牌。
+
+所以 v1.x 站唯一的要求是**站点标签页开着**（面板本来就开在站点页上，正常不会缺）。
+面板会在「站点类型」那行标明 v1.x，并提示按 token 方式配置。
+
 **SITES JSON**：左边贴行格式（或留空，用「提取」面板存进去的内容），选输出形式
 （SITES 值 / gh 命令 / HTTP body / 格式化预览）。「追加到已存」会把新账号按凭证值
 去重后并进 `chrome.storage.local`；「→ 跨标签页填进 GitHub」把结果填进所有已打开的
