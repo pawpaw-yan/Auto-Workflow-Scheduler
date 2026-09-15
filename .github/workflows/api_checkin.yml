@@ -1,0 +1,151 @@
+name: api_checkin
+
+# ═══════════════════════════════════════════════════════════════════════
+# 项目：api_checkin
+#
+# 对应代码：python/api_checkin/index.py
+# 对应环境：python_api_checkin
+#
+# 功能：new-api / one-api 站点每日签到。支持多站点、一个站点多账号，
+#       每个账号用 cookie 或访问令牌认证。
+#
+# 触发方式：
+#   1) 总入口派发：run-project.yml 传 project=api_checkin
+#   2) 直接调用 API：
+#      POST /repos/<owner>/<repo>/actions/workflows/api_checkin.yml/dispatches
+#      {"ref":"main","inputs":{"overrides":"{\"API_VERBOSE\":\"true\"}"}}
+#   3) Actions 页面手动 Run workflow（可填 overrides）
+#
+# ── 用 ref 传账号列表（SITES）──
+# 派发时把整个账号表塞进 overrides.SITES 即可，省得去网页改 secret：
+#
+#   {"ref":"main","inputs":{"overrides":
+#     "{\"SITES\":{\"https://a.com\":[\"session=xxx\",\"sk-yyy\"],
+#                  \"https://b.com\":[{\"token\":\"sk-zzz\",\"user_id\":\"1001\"}]}}"}}
+#
+# ⚠️⚠️ workflow_dispatch 的 inputs **不是机密，也不受脱敏保护**：
+#     GitHub 会把它原样存进本次 run 的记录，`::add-mask::` 只遮日志、遮不住它。
+#     本仓库是**公开**的，所以任何人打开 run 详情页都能看到你传的 cookie / 令牌。
+#     → 只想图方便、不在乎这些免费站账号被人看到，可以用；
+#     → 想保密就把账号表写进 Environment secret SITES（「一行一个账号」格式）。
+#     脚本在 ref 传了 SITES 时会主动打一条 ::warning:: 提醒。
+#
+# 配置来源优先级（高 → 低）：
+#     ref（inputs.overrides）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
+# 前两层由本文件和 common/apply-overrides.sh 完成；.env 是最低优先级，
+# 由 Python 侧在运行期读取（python/common/dotenv.py），不在 workflow 里体现。
+# 被替换 / 被补入的项都只在日志与 Job Summary 里列**名字**，不回显值。
+#
+# 通用逻辑全部在 common/*.sh，本文件只做「声明」：
+#   common/install-deps.sh     依赖安装（按 LANG_NAME 分支）
+#   common/apply-overrides.sh  ref 层：应用 inputs.overrides
+#   common/check-secrets.sh    配置自检（默认跳过；DEBUG_MODE 开启时输出明文 + HMAC 指纹）
+#   common/execute.sh          按 ENTRY 扩展名执行
+#
+# 新增同类项目：复制本文件，改 name / environment.name / env / ENTRY 四处。
+# ═══════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      # 可选：JSON 对象，本次运行用它的值替换下面的 vars / secrets。
+      # 只列名字不列值，且值会注册进日志遮蔽列表。留空 = 完全使用仓库配置。
+      overrides:
+        description: 'JSON：覆盖 vars/secrets，如 {"API_VERBOSE":"true"} 或 {"SITES":{"https://a.com":["sk-x"]}}；⚠️ 传入值会公开，含凭证时慎用'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: api_checkin
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: api_checkin
+    runs-on: ubuntu-latest
+    # 挂到本项目专属的 Environment，secrets 与其他项目隔离
+    environment:
+      name: python_api_checkin
+    permissions:
+      contents: read
+    env:
+      # ── 传给 common/*.sh 的通用参数 ──
+      ENV_NAME:  python_api_checkin
+      LANG_NAME: python
+      PROJECT:   api_checkin
+      ENTRY:     python/api_checkin/index.py
+
+      # ── 敏感值 → Environment secrets，用 secrets.* 引用 ──
+      #    SITES 是**多行**，一行一个账号：
+      #       <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
+      #    凭证放最后一段，所以凭证里出现 | 也不会被切断。
+      #    ⚠️ 老 one-api / 部分 fork 的 sk- 只是模型调用 key，不能当用户令牌，
+      #       那类站点请用 cookie 认证（详见 python/api_checkin/README.md）。
+      SITES:                  ${{ secrets.SITES }}
+      PUSHDEER_SENDKEY:       ${{ secrets.PUSHDEER_SENDKEY }}
+
+      # ── 非敏感配置 → Environment variables，用 vars.* 引用 ──
+      #    写错来源（该用 vars 却写了 secrets）会静默解析成空字符串，
+      #    代码里有默认值兜底，所以不会报错但配置不生效。
+      API_VERBOSE:            ${{ vars.API_VERBOSE }}
+      API_TIMEOUT:            ${{ vars.API_TIMEOUT }}
+
+      # ── 参数覆盖：workflow_dispatch 的 inputs.overrides（JSON 单行）──
+      #    留空 → common/apply-overrides.sh 整步跳过，继续用上面的 vars / secrets。
+      OVERRIDES:              ${{ inputs.overrides }}
+
+      # ── 指纹密钥：仓库级 secret，只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印 ──
+      COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
+
+      # ── 配置自检的调试开关（两级，Environment 覆盖仓库级）──
+      # 默认【整体跳过】自检；只有这里为真值时才执行，并输出明文便于排查。
+      #   DEBUG_MODE          当前 Environment 的开关：只调试本项目时设它
+      #   COMMON_DEBUG_MODE   仓库级全局开关：所有项目一起打开
+      # 未设置 → 展开为空字符串 → 脚本按「回落到另一级 / 跳过」处理。
+      # ⚠️ 这两行必须存在：脚本只认进程环境变量，GitHub 上的 Variables 靠这两行桥接，
+      #    漏了就会出现「在 GitHub 设了开关但没生效」。
+      DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
+      COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
+
+      # 需要自检的名称，空格分隔（仅在调试开关开启时才会被读取与输出）。
+      #   SECRET_NAMES   → 只输出 HMAC 指纹（值不可见，永不打印明文）
+      #   VARIABLE_NAMES → 输出明文值
+      # ⚠️ 必须写**进程里真实存在的变量名**（就是上面 env: 里那几行的键名）。
+      SECRET_NAMES:   "SITES PUSHDEER_SENDKEY"
+      VARIABLE_NAMES: "API_VERBOSE API_TIMEOUT"
+
+      # 允许被 inputs.overrides 替换的项。留空/不写则回落到 SECRET_NAMES + VARIABLE_NAMES
+      # （上面的自检清单）——两者都空时 apply-overrides.sh 会拒绝覆盖。
+      # ⚠️ 注意别用 overrides 传 SITES：workflow_dispatch 的 inputs 不是机密。
+      # OVERRIDE_NAMES: "API_VERBOSE API_TIMEOUT"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 必须排在 Check secrets / Run 之前：它把覆盖值写进 GITHUB_ENV，
+      # 后续 step（含自检表）读到的才是本次真正生效的配置。
+      - name: Apply overrides
+        run: bash common/apply-overrides.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: bash common/install-deps.sh
+
+      - name: Check secrets
+        run: bash common/check-secrets.sh
+
+      - name: Run
+        run: bash common/execute.sh
+
+      # 把 Run 的输出重新渲染到 Job Summary。
+      # if: always()：即使 Run 失败，也要把已产生的输出带出来
+      - name: Job Summary
+        if: always()
+        env:
+          SUMMARY_TITLE: API 签到
+        run: bash common/render-summary.sh

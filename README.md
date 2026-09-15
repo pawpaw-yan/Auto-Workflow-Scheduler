@@ -59,6 +59,7 @@ GitHub 自带的定时任务不准、还会被自动停用，所以改用**外�
 | 项目 | 语言 | 做什么 | 建议调度频率 |
 |---|---|---|---|
 | [`glados_checkin`](python/glados_checkin/README.md) | Python | GLaDOS / Railgun 自动签到（多域名多账号），可选自动兑换套餐 | 每天 1~2 次 |
+| [`api_checkin`](python/api_checkin/README.md) | Python | new-api / one-api 站点签到（多站点多账号，cookie 或访问令牌） | 每天 1~2 次 |
 | [`oracle-abc`](python/oracle-abc/README.md) | Python | 抢 Oracle Cloud 的免费 Ampere A1 实例，抢到后分步升级到目标规格 | 每 1~5 分钟 |
 
 点项目名进各自的 README 看业务细节（要配哪些参数、脚本怎么跑、专属的常见问题）。
@@ -76,6 +77,7 @@ Auto-Workflow-Scheduler/
 └── python/                          ★ Python 语言目录
     ├── common/                      语言级共享代码
     ├── glados_checkin/              项目目录：GLaDOS / Railgun 签到
+    ├── api_checkin/                 项目目录：new-api / one-api 签到
     └── oracle-abc/                  项目目录：抢 OCI Ampere A1
 ```
 
@@ -650,6 +652,7 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 | 项目 | 说明文档 |
 |---|---|
 | `glados_checkin` | [python/glados_checkin/README.md](python/glados_checkin/README.md) |
+| `api_checkin` | [python/api_checkin/README.md](python/api_checkin/README.md) |
 | `oracle-abc` | [python/oracle-abc/README.md](python/oracle-abc/README.md) |
 
 ### 11.4 其他
