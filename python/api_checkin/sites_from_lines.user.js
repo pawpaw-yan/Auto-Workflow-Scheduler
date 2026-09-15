@@ -605,13 +605,6 @@
     return false;
   }
 
-  function listOfTokens(data) {
-    if (!data) return [];
-    if (Array.isArray(data.data)) return data.data;              // 老 one-api
-    if (data.data && Array.isArray(data.data.items)) return data.data.items;  // 新 new-api
-    return [];
-  }
-
   /**
    * 尽量凑出 Cookie 请求头，并把「GM_cookie 为什么用不了」一并带回去 —— 光说「读不到」
    * 没法让人修，得说清是没声明、没开权限、还是版本不支持。
@@ -710,7 +703,6 @@
       origin: location.origin,
       status: null,
       me: null,
-      tokens: [],
       cookie: "",
       cookieSource: "document",
       sessionVisible: false,
@@ -752,13 +744,6 @@
     result.accessToken = accessTokenFromUser(result.me) || accessTokenFromUser(userFromLocalStorage());
     result.userFields = Object.keys(result.me);   // 诊断用：字段名不确定时看这个
 
-    try {
-      const listed = await api("/api/token/?p=0&size=100");
-      result.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
-    } catch (e) {
-      result.errors.push("读令牌列表失败（" + e.message + "），可以点「新建令牌」试一个");
-    }
-
     result.sessionVisible = /(^|;\s*)(session|new-api-session)=/.test(result.cookie);
     return result;
   }
@@ -784,36 +769,6 @@
       return "接口返回 success=false：" + JSON.stringify(data).slice(0, 140);
     } catch (e) {
       return e.message;
-    }
-  }
-
-  async function createToken(name, userId) {
-    // 形态对齐 one-api / new-api 的 AddToken：永不过期 + 不限额
-    const body = JSON.stringify({
-      name: name,
-      remain_quota: 0,
-      expired_time: -1,
-      unlimited_quota: true,
-      model_limits_enabled: false,
-      model_limits: "",
-      allow_ips: "",
-      group: "",
-    });
-    const data = await api("/api/token/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "New-Api-User": String(userId) },
-      body: body,
-    });
-    if (!data || data.success !== true) {
-      throw new Error((data && data.message) ? data.message : "创建失败（响应里没有 success）");
-    }
-  }
-
-  /** 删掉一个令牌。刻意留在「新建」旁边：建多了就得能删，否则只能去站点手点 */
-  async function deleteToken(id) {
-    const data = await api("/api/token/" + id, { method: "DELETE" });
-    if (!data || data.success !== true) {
-      throw new Error((data && data.message) ? data.message : "删除失败（响应里没有 success）");
     }
   }
 
@@ -845,10 +800,9 @@
     const cookieField = el("textarea", { rows: "2", spellcheck: "false", placeholder: "（读不到，可把 F12 → Network 里的 Cookie 头粘进来）" });
     const regenBtn = el("button", { text: "♻ 重新生成" });
 
-    // API 密钥（sk- 开头、调用模型用）—— 和「系统访问令牌」不是一回事，单独弱化摆放
-    const tokenSelect = el("select");
-    const createBtn = el("button", { text: "＋ 新建" });
-    const deleteBtn = el("button", { text: "🗑 删除" });
+    // 两个独立的测试按钮：分别验访问令牌与 Cookie 会话
+    const testTokenBtn = el("button", { text: "🔍 测试访问令牌" });
+    const testCookieBtn = el("button", { text: "🔍 测试 Cookie" });
 
     let state = null;
 
@@ -874,26 +828,30 @@
       if (!cookieField.dataset.acsManual) cookieField.value = (state && state.cookie) || "";
     }
 
-    function renderTokenOptions() {
-      tokenSelect.textContent = "";
-      if (!state || !state.tokens.length) {
-        tokenSelect.appendChild(el("option", { value: "", text: "（这个账号没有 API 密钥）" }));
-        return;
+    /**
+     * 测试 Cookie 会话。
+     *
+     * ⚠️ 只能测「浏览器自己的会话」：Cookie 是 fetch 的**禁止头**，脚本没法把某个 Cookie
+     * 字符串塞进请求里。所以手填的 Cookie 无法直接验证 —— 能验的是「当前浏览器带上的会话
+     * 到底管不管用」，也就是 GM_cookie 读到的那些 cookie 有没有效。
+     */
+    async function verifyCookie() {
+      const verifyCell = info.querySelector("[data-acs-token-verify]");
+      const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
+
+      setVerify("正在测试 Cookie 会话…");
+      try {
+        const data = await api("/api/user/self");   // credentials: same-origin → 浏览器自己带 cookie
+        if (data && data.success === true) {
+          setVerify(cookieField.dataset.acsManual
+            ? "✅ 浏览器会话有效。注意：测的是浏览器自己带的 cookie；手填的那串脚本发不出去（Cookie 是禁止头），验不了"
+            : "✅ Cookie 会话有效（浏览器已自动带上读到的那些 cookie）");
+        } else {
+          setVerify("⚠️ Cookie 测试失败：接口返回 success=false —— " + JSON.stringify(data).slice(0, 140));
+        }
+      } catch (e) {
+        setVerify("⚠️ Cookie 测试失败：" + e.message);
       }
-      state.tokens.forEach((token, i) => {
-        const name = token.name || ("#" + (token.id || i + 1));
-        const off = token.status !== 1 ? "（已禁用）" : "";
-        tokenSelect.appendChild(el("option", { value: String(i), text: name + off }));
-      });
-      tokenSelect.value = "0";
-    }
-
-
-    /** 新建 / 删除 API 密钥之后重新拉一次列表 */
-    async function reloadTokens() {
-      const listed = await api("/api/token/?p=0&size=100");
-      state.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
-      renderTokenOptions();
     }
 
     /**
@@ -946,7 +904,7 @@
         ]));
       });
       info.appendChild(el("div", { class: "acs-kv" }, [
-        el("b", { text: "访问令牌　" }),
+        el("b", { text: "验证结果　" }),
         el("span", { "data-acs-token-verify": "1", text: "读取后自动验证" }),
       ]));
       if (state.errors.length) {
@@ -954,13 +912,6 @@
       }
       const fieldsCell = body.querySelector("[data-acs-userfields]");
       if (fieldsCell) fieldsCell.textContent = state.userFields.join(", ") || "（没拿到字段名）";
-
-      // GM_cookie 没问题就把开启指引收起来，不占地方
-      const gmGuide = body.querySelector("[data-acs-gmguide]");
-      if (gmGuide) {
-        if (state.gmState === "ok") gmGuide.removeAttribute("open");
-        else gmGuide.setAttribute("open", "open");
-      }
     }
 
     async function load() {
@@ -969,7 +920,6 @@
       try {
         state = await collect(idInput.value);
         renderInfo();
-        renderTokenOptions();
         await verifyAccess();
         errorBox.className = "acs-status ok";
         errorBox.textContent = state.accessToken
@@ -984,61 +934,14 @@
       }
     }
 
-    createBtn.addEventListener("click", async () => {
-      if (!state) return;
-      createBtn.disabled = true;
-      errorBox.className = "acs-status";
-      errorBox.textContent = "正在创建…";
-      try {
-        const name = "api_checkin " + new Date().toISOString().slice(0, 10);
-        await createToken(name, state.me.id);
-        await reloadTokens();
-        // 刚建的排最后，直接选中它
-        tokenSelect.value = String(Math.max(0, state.tokens.length - 1));
-        errorBox.className = "acs-status ok";
-        errorBox.textContent = "已新建 API 密钥：" + name + "（只是标签，站点上可以改）";
-      } catch (e) {
-        errorBox.className = "acs-status err";
-        errorBox.textContent = "新建失败：" + e.message;
-      } finally {
-        createBtn.disabled = false;
-      }
-    });
-
-    deleteBtn.addEventListener("click", async () => {
-      if (!state || !state.tokens.length) return;
-      const token = state.tokens[Number(tokenSelect.value || 0)];
-      if (!token || !token.id) return;
-
-      const name = token.name || ("#" + token.id);
-      const sure = window.confirm(
-        "确定删除 API 密钥「" + name + "」？\n\n"
-        + "这一步在站点上不可撤销。如果别的脚本正在用它调模型，删了它们就会 401。"
-      );
-      if (!sure) return;
-
-      deleteBtn.disabled = true;
-      errorBox.className = "acs-status";
-      errorBox.textContent = "正在删除…";
-      try {
-        await deleteToken(token.id);
-        await reloadTokens();
-        errorBox.className = "acs-status ok";
-        errorBox.textContent = "已删除 API 密钥：" + name;
-      } catch (e) {
-        errorBox.className = "acs-status err";
-        errorBox.textContent = "删除失败：" + e.message;
-      } finally {
-        deleteBtn.disabled = false;
-      }
-    });
-
     retryBtn.addEventListener("click", load);
 
     // 手工粘进来的值标记一下，之后不再被自动读取覆盖
     accessTokenField.addEventListener("input", () => { accessTokenField.dataset.acsManual = "1"; });
     cookieField.addEventListener("input", () => { cookieField.dataset.acsManual = "1"; });
-    accessTokenField.addEventListener("change", () => { if (state) verifyAccess(); });
+
+    testTokenBtn.addEventListener("click", () => { if (state) verifyAccess(); });
+    testCookieBtn.addEventListener("click", () => { if (state) verifyCookie(); });
 
     regenBtn.addEventListener("click", async () => {
       if (!state) return;
@@ -1086,13 +989,8 @@
     body.appendChild(valueRow("用户 ID", idField));
     body.appendChild(valueRow("访问令牌", accessTokenField));
     body.appendChild(valueRow("Cookie", cookieField));
-    body.appendChild(el("div", { class: "acs-row" }, [el("div", { style: "flex:1" }), regenBtn]));
-
-    // API 密钥单独收进折叠块 —— 它是给模型调用用的，和上面的访问令牌不是一回事
-    body.appendChild(el("details", { style: "margin-top:12px" }, [
-      el("summary", { text: "API 密钥（sk- 开头，调用模型用 —— api_checkin 用不上）" }),
-      el("div", { class: "acs-row", style: "margin-top:8px" }, [tokenSelect, createBtn, deleteBtn]),
-      el("p", { class: "acs-hint", text: "这一组走 /api/token/，就是站点「密钥管理」页里的东西；有的版本只返回掩码（含 *），拿不到明文。" }),
+    body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [
+      testTokenBtn, testCookieBtn, el("div", { style: "flex:1" }), regenBtn,
     ]));
 
     body.appendChild(el("details", { style: "margin-top:10px", "data-acs-gmguide": "1" }, [
