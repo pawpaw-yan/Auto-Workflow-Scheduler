@@ -420,35 +420,82 @@
     setTimeout(() => input.classList.remove("acs-flash"), 1600);
   }
 
+  // 输出形式。cron-job.org 要的是**带转义的完整体**，Actions 输入框要的是**不转义的值** ——
+  // 复制错地方就会报错，所以做成下拉，并把「给谁用」写在界面上。
+  const CONVERT_FORMATS = [
+    {
+      id: "sites",
+      label: "SITES 值（不转义）",
+      hint: "粘 Actions 页面的 SITES 输入框 —— 或者直接用下面的「填入」按钮",
+    },
+    {
+      id: "body",
+      label: "HTTP body（带转义）",
+      hint: "cron-job.org / curl 的 Request body：外层 ref + inputs，SITES 的值是**转义过的字符串**",
+    },
+    {
+      id: "gh",
+      label: "gh 命令（零转义）",
+      hint: "整行复制到终端即可执行，不用手写任何转义；走总入口就换成 run-project.yml 再加 -f project=",
+    },
+    {
+      id: "pretty",
+      label: "格式化预览",
+      hint: "缩进版，**只看结构**，不要直接粘出去（粘到 cron-job 会 400）",
+    },
+  ];
+
   function openConverter(targetInput, initialLines) {
-    const ui = makePanel(initialLines ? "行格式 → SITES JSON（已从站点侧带入）" : "行格式 → SITES JSON");
+    const ui = makePanel(initialLines ? "行格式 → 派发内容（已从站点侧带入）" : "行格式 → 派发内容");
     const body = ui.body;
 
     const inputArea = el("textarea", { rows: "7", spellcheck: "false", placeholder: FORMAT_HINT });
     if (initialLines) inputArea.value = initialLines;
+
     const errorBox = el("div", { class: "acs-status" });
+    const formatSelect = el("select");
+    CONVERT_FORMATS.forEach((item) => {
+      formatSelect.appendChild(el("option", { value: item.id, text: item.label }));
+    });
+    const refLabel = el("label", { text: "ref" });
+    const refInput = el("input", { type: "text", value: DEFAULT_REF, spellcheck: "false" });
+    refInput.style.maxWidth = "120px";
+    const formatHint = el("p", { class: "acs-hint" });
+
     const preview = el("textarea", {
-      rows: "4", readonly: "readonly", spellcheck: "false", placeholder: "上面一旦有内容，这里实时显示结果",
+      rows: "5", readonly: "readonly", spellcheck: "false", placeholder: "上面一旦有内容，这里实时显示结果",
     });
     const fillBtn = el("button", { class: "acs-primary", text: "填入 SITES 输入框", disabled: "disabled" });
-    const copyBtn = el("button", { text: "复制 JSON", disabled: "disabled" });
-    // 没有目标输入框（比如从站点侧菜单打开）时就只出 JSON，不显示「填入」
-    if (!targetInput) fillBtn.style.display = "none";
+    const copyBtn = el("button", { text: "复制", disabled: "disabled" });
 
-    let currentJson = "";
+    let currentText = "";
+
+    function currentFormat() {
+      const hit = CONVERT_FORMATS.filter((item) => item.id === formatSelect.value)[0];
+      return hit || CONVERT_FORMATS[0];
+    }
 
     function update() {
+      const format = currentFormat();
+      formatHint.textContent = format.hint;
+
+      // 「填入」只在输出是**裸 SITES 值**时才有意义 —— 别把 HTTP body 填进那个框
+      const fillable = format.id === "sites" && Boolean(targetInput);
+      const needsRef = format.id === "body" || format.id === "gh";
+      refLabel.style.display = needsRef ? "" : "none";
+      refInput.style.display = needsRef ? "" : "none";
+
       const parsed = parseLines(inputArea.value);
 
       if (parsed.errors.length) {
-        currentJson = "";
+        currentText = "";
         errorBox.className = "acs-status err";
         errorBox.textContent = parsed.errors.join("\n");
         preview.value = "";
       } else {
         const sites = buildSites(parsed.accounts);
-        currentJson = render(sites, "sites", "main");
-        preview.value = currentJson;
+        currentText = render(sites, format.id, refInput.value.trim() || DEFAULT_REF);
+        preview.value = currentText;
 
         const cookies = parsed.accounts.filter((a) => a.kind === "cookie").length;
         errorBox.className = "acs-status ok";
@@ -456,22 +503,28 @@
           + " 个账号（cookie " + cookies + "，token " + (parsed.accounts.length - cookies) + "）";
       }
 
-      const ok = Boolean(currentJson);
-      fillBtn.disabled = !ok;
-      copyBtn.disabled = !ok;
+      fillBtn.style.display = fillable ? "" : "none";
+      fillBtn.disabled = !fillable || !currentText;
+      copyBtn.disabled = !currentText;
     }
 
     inputArea.addEventListener("input", update);
+    formatSelect.addEventListener("change", () => {
+      update();
+      preview.scrollTop = 0;
+    });
+    refInput.addEventListener("input", update);
+
     fillBtn.addEventListener("click", () => {
-      if (!currentJson) return;
-      fillInput(targetInput, currentJson);
+      if (!currentText) return;
+      fillInput(targetInput, currentText);
       ui.close();   // 遮罩挡着表单，填完就收起来让人看得见
       toast("已填入 SITES，接着点 GitHub 自己的 Run workflow 就行");
     });
     copyBtn.addEventListener("click", () => {
-      copyText(currentJson).then((ok) => {
-        if (!ok) { toast("复制失败，请手动全选复制", true); return; }
-        toast("JSON 已复制");
+      const label = currentFormat().label;
+      copyText(currentText).then((ok) => {
+        toast(ok ? label + " 已复制" : "复制失败，请手动全选复制", !ok);
       });
     });
 
@@ -479,8 +532,10 @@
     body.appendChild(errorBox);
     body.appendChild(el("p", { class: "acs-hint", text: "每行 4 段；空行与 # 开头的行会跳过；凭证放最后一段，所以凭证里带 | 也不会被切断。" }));
     body.appendChild(el("div", { class: "acs-row", style: "margin:10px 0 6px" }, [
-      el("label", { text: "生成的 JSON" }),
+      el("label", { text: "输出形式" }), formatSelect, refLabel, refInput,
     ]));
+    body.appendChild(formatHint);
+    body.appendChild(el("div", { class: "acs-row", style: "margin:10px 0 6px" }, [el("b", { text: "生成结果" })]));
     body.appendChild(preview);
     body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [fillBtn, copyBtn]));
 
