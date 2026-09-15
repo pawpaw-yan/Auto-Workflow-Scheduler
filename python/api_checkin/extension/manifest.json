@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "api_checkin 账号小助手",
+  "version": "1.0.0",
+  "description": "从 new-api / one-api 站点提取访问令牌与完整 Cookie（含 httpOnly），转换成 SITES 配置、支持追加合并，并可跨标签页填进 GitHub 派发表单。",
+  "permissions": ["cookies", "storage", "scripting", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "api_checkin 账号小助手"
+  }
+}

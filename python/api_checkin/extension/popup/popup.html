@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>🛠 账号小助手</h1>
+    <nav class="tabs">
+      <button data-tab="extract" class="tab active" type="button">提取账号</button>
+      <button data-tab="sites" class="tab" type="button">SITES JSON</button>
+    </nav>
+  </header>
+
+  <!-- ① 提取账号 -->
+  <section id="panel-extract">
+    <div class="row">
+      <label>站点</label>
+      <input id="siteInput" type="text" spellcheck="false" placeholder="https://your-site.com">
+      <button id="loadBtn" class="primary" type="button">读取</button>
+    </div>
+
+    <div id="info" class="kv"></div>
+    <div id="extractError" class="status"></div>
+
+    <div class="row">
+      <label>用户 ID</label>
+      <input id="userIdInput" type="text" spellcheck="false" placeholder="自动读不到时手填">
+      <button id="retryBtn" type="button">重试</button>
+    </div>
+
+    <div class="row title"><b>提取到的值</b></div>
+    <div class="row">
+      <label>用户 ID</label>
+      <input id="idField" type="text" readonly spellcheck="false" placeholder="（未取到）">
+      <button class="copy" data-target="idField" type="button">复制</button>
+    </div>
+    <div class="row">
+      <label>访问令牌</label>
+      <input id="tokenField" type="text" spellcheck="false" placeholder="（没读到，可把站点上复制的值粘进来）">
+      <button class="copy" data-target="tokenField" type="button">复制</button>
+    </div>
+    <div class="row">
+      <label>Cookie</label>
+      <textarea id="cookieField" rows="3" spellcheck="false" placeholder="（读不到，可把 F12 → Network 里的 Cookie 头粘进来）"></textarea>
+      <button class="copy" data-target="cookieField" type="button">复制</button>
+    </div>
+
+    <div class="row">
+      <button id="testTokenBtn" type="button">🔍 测试访问令牌</button>
+      <button id="testCookieBtn" type="button">🔍 测试 Cookie</button>
+      <button id="toSitesBtn" class="primary" type="button">→ 填进 SITES JSON</button>
+    </div>
+    <div id="testResult" class="status"></div>
+  </section>
+
+  <!-- ② SITES JSON -->
+  <section id="panel-sites" hidden>
+    <div class="row title"><b>行格式账号表</b></div>
+    <textarea id="linesInput" rows="6" spellcheck="false"></textarea>
+    <p class="hint">每行 4 段；空行与 # 开头的行会跳过；凭证放最后一段，凭证里带 | 也不会被切断。</p>
+
+    <div class="row">
+      <label>输出形式</label>
+      <select id="formatSelect"></select>
+      <label id="refLabel" hidden>ref</label>
+      <input id="refInput" type="text" value="main" spellcheck="false" hidden>
+    </div>
+    <p id="formatHint" class="hint"></p>
+
+    <div class="row">
+      <label>写入方式</label>
+      <label class="radio"><input type="radio" name="writeMode" value="replace" checked> 替换</label>
+      <label class="radio"><input type="radio" name="writeMode" value="append"> 追加到已存</label>
+      <button id="clearStoredBtn" type="button">清空已存</button>
+    </div>
+    <div id="storedInfo" class="hint"></div>
+
+    <div class="row title"><b>生成结果</b></div>
+    <textarea id="preview" rows="6" readonly spellcheck="false" placeholder="左边一旦有内容，这里实时显示"></textarea>
+
+    <div class="row">
+      <button id="copyBtn" class="primary" type="button" disabled>复制</button>
+      <button id="fillGithubBtn" type="button" disabled>→ 跨标签页填进 GitHub</button>
+    </div>
+    <div id="fillResult" class="hint"></div>
+  </section>
+
+  <footer>
+    全部在本机浏览器里完成，不会发往任何第三方。
+    <span id="coreVersion"></span>
+  </footer>
+
+  <script src="../lib/core.js"></script>
+  <script src="../lib/site-api.js"></script>
+  <script src="../lib/site-storage.js"></script>
+  <script src="../lib/verify.js"></script>
+  <script src="../lib/access-token.js"></script>
+  <script src="../lib/collect.js"></script>
+  <script src="popup.js"></script>
+  <script src="panel-extract.js"></script>
+  <script src="extract-actions.js"></script>
+  <script src="panel-sites.js"></script>
+  <script src="panel-sites-fill.js"></script>
+</body>
+</html>

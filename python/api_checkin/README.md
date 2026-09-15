@@ -650,6 +650,7 @@ python index.py
 |---|---|
 | `python/api_checkin/index.py` | 入口脚本 |
 | `python/api_checkin/sites_from_lines.user.js` | 篡改猴脚本：GitHub 派发页「行格式 → JSON 并填入」+ 站点侧一键提取 cookie / 用户ID / 令牌（不参与 Actions） |
+| `python/api_checkin/extension/` | Chrome 扩展版「账号小助手」：读 httpOnly cookie、带 cookie 过 WAF、跨标签页填写（见 [extension/README.md](extension/README.md)） |
 | `python/api_checkin/.env.example` | `.env` 模板（提交；只放占位符）。同目录的 `.env` 才是实际生效的那个，已被 gitignore |
 | `.github/workflows/api_checkin.yml` | 项目 workflow |
 | `python/common/dotenv.py` | Python 语言级共享的 `.env` 读取 |
