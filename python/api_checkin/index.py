@@ -59,6 +59,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -821,6 +822,26 @@ class SiteClient:
         }
         return {k: v for k, v in me.items() if v is not None} or {"id": 0}
 
+    def _session_expiry_note(self) -> str:
+        """cookie 里若带 JWT 会话（如 linuxdo_checkin_session），解出 exp 提示有效期。
+        这类站的会话通常约 24 小时一换，过期后需重新登录提取。"""
+        for part in (self.account.secret or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name != "linuxdo_checkin_session" or value.count(".") < 2:
+                continue
+            try:
+                payload_b64 = value.split(".")[1]
+                payload_b64 += "=" * (-len(payload_b64) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+                exp = int(payload.get("exp") or 0)
+            except Exception:
+                continue
+            if exp:
+                when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp))
+                state = "已过期" if time.time() >= exp else "将于 " + when + " 过期"
+                return "（JWT 会话" + state + "；该站会话约 24 小时一换，过期后需重新登录提取）"
+        return ""
+
     def checkin(self) -> Tuple[bool, str, object]:
         if self._mode == "checkin-system":
             return self._checkin_system()
@@ -834,7 +855,11 @@ class SiteClient:
         if not info.get("logged_in"):
             raise AuthError(
                 "未登录：该站是独立的签到系统，请先在浏览器用 Linux Do 登录并复制本域名的 cookie"
+                + self._session_expiry_note()
             )
+        if not info.get("can_checkin"):
+            # 站点规则：余额达到门槛（如 ≥$20 禁签）或今日已签 —— 不发请求，如实上报
+            return False, str(info.get("message") or "今日不可签到（已签过或未达签到条件）"), info
         captcha = info.get("captcha") or {}
         if captcha.get("enabled"):
             raise RequestError(

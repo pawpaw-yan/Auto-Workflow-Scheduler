@@ -65,6 +65,22 @@ async function collectSite(site, manualUserId) {
   // 3. 会话：签到系统看 info；v1.x 用自举结果；标准站带 cookie 调 /api/user/self
   if (checkinInfo) {
     result.sessionValid = !!checkinInfo.logged_in;
+    // JWT 会话有效期（linuxdo_checkin_session 的 payload.exp）—— 这类站的会话约 24 小时一换
+    const m = /(?:^|;\s*)linuxdo_checkin_session=([^;]+)/.exec(result.cookie);
+    if (m) {
+      try {
+        let b64 = m[1].split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        while (b64.length % 4) b64 += "=";
+        const payload = JSON.parse(atob(b64));
+        if (payload.exp) {
+          result.sessionExpiresAt = payload.exp * 1000;
+          if (result.sessionExpiresAt <= Date.now()) {
+            result.sessionValid = false;
+            result.errors.push("会话已过期（" + new Date(result.sessionExpiresAt).toLocaleString() + "）—— 重新登录本站并重新提取");
+          }
+        }
+      } catch (e) { /* 解不出就忽略 */ }
+    }
     if (result.sessionValid) {
       result.me = { id: userId, username: checkinInfo.username || "", quota: checkinInfo.quota };
     }

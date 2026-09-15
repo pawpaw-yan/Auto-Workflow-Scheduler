@@ -17,7 +17,24 @@ async function runTokenTest() {
   }
 }
 
-async function runCookieTest() {
+async function runCookieTestDispatch() {
+  // 独立签到系统没有 /api/user/self（SPA 兜底页会被误判成 WAF）—— /api/info 才是状态口
+  if (extractState && extractState.siteType === "checkin-system") {
+    const site = normSite();
+    try {
+      const info = await callApi(site + "/api/info", { credentials: "include" });
+      if (info && info.logged_in) {
+        setStatus("testResult", info.can_checkin
+          ? "✅ Cookie 能过：已登录，且今日可签到"
+          : "✅ Cookie 能过（已登录 " + (info.username || "") + "）；站点规则：" + (info.message || "今日不可签到"));
+      } else {
+        setStatus("testResult", "❌ Cookie 没过：未登录（会话约 24 小时过期，重新登录后再提取）", true);
+      }
+    } catch (e) {
+      setStatus("testResult", "❌ Cookie 没过：" + e.message, true);
+    }
+    return;
+  }
   const site = normSite();
   let userId = (extractState && extractState.userId) || byId("userIdInput").value.trim();
   if (!userId) {
@@ -69,5 +86,5 @@ async function toSites() {
 }
 
 byId("testTokenBtn").addEventListener("click", runTokenTest);
-byId("testCookieBtn").addEventListener("click", runCookieTest);
+byId("testCookieBtn").addEventListener("click", runCookieTestDispatch);
 byId("toSitesBtn").addEventListener("click", toSites);
