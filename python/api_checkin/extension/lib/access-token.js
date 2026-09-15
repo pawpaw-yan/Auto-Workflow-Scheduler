@@ -43,3 +43,26 @@ async function resolveAccessToken(site, me, userId) {
     return { token: "", source: "", note: "GET /api/user/token 失败：" + e.message };
   }
 }
+
+/** 用已有凭证（如 v1.x 的轮换令牌）调 GET /api/user/token 换长效系统访问令牌。
+    临时令牌只是过墙的钥匙 —— 真正该给 SITES 用的是这个长效令牌。 */
+async function fetchLongLivedToken(site, bearer, userId) {
+  try {
+    const data = await callApi(site + "/api/user/token", {
+      userId: userId,
+      headers: { Authorization: "Bearer " + bearer },
+    });
+    const payload = data && data.data;
+    const token = typeof payload === "string"
+      ? payload.trim()
+      : String((payload && (payload.access_token || payload.token || payload.key)) || "").trim();
+    if (!token || looksMasked(token)) return { token: "", note: "" };
+    const result = await tryVerify(token, userId, site);
+    if (result.ok) {
+      return { token: token, source: "GET /api/user/token 的系统访问令牌（长效）", result: result };
+    }
+    return { token: "", note: "" };
+  } catch (e) {
+    return { token: "", note: "GET /api/user/token 失败：" + e.message };
+  }
+}

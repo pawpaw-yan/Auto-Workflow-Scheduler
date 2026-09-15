@@ -130,15 +130,36 @@ function cookieHeader(cookies) {
     .join("; ");
 }
 
-/** 读某站点的全部 cookie —— chrome.cookies 拿得到 httpOnly，油猴的 document.cookie 拿不到 */
+/** 读某站点的全部 cookie —— chrome.cookies 拿得到 httpOnly，油猴的 document.cookie 拿不到。
+    依次试：按 URL → 按域名（兜父域 cookie）→ 按域名 + 分区键（CHIPS）。 */
 async function readCookies(site) {
+  const base = /^https?:\/\//.test(site) ? site : "https://" + site;
+  let host = "";
+  let origin = base;
   try {
-    const url = /^https?:\/\//.test(site) ? site : "https://" + site;
-    const cookies = await chrome.cookies.getAll({ url: url });
-    return { ok: true, cookies: cookies || [] };
+    const u = new URL(base);
+    host = u.hostname;
+    origin = u.origin;
   } catch (e) {
-    return { ok: false, cookies: [], error: e.message };
+    return { ok: false, cookies: [], error: "站点地址无法解析：" + base };
   }
+
+  const tries = [
+    { label: "url", q: { url: base } },
+    { label: "domain", q: { domain: host } },
+    { label: "partitioned", q: { url: base, partitionKey: { topFrameSite: origin } } },
+  ];
+  let lastError = "";
+  for (const t of tries) {
+    try {
+      const cookies = await chrome.cookies.getAll(t.q);
+      if (cookies && cookies.length) return { ok: true, cookies: cookies };
+    } catch (e) {
+      lastError = e.message;   // 分区键在旧版 Chrome 可能报错，继续下一档
+    }
+  }
+  if (lastError) return { ok: false, cookies: [], error: lastError };
+  return { ok: true, cookies: [] };
 }
 /** new-api v1.x 自举：POST /api/user/auth/refresh —— 与站点前端同一逻辑，
     浏览器自动带上 httpOnly 的刷新 cookie，返回 { access_token, user, session }。

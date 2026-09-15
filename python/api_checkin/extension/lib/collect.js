@@ -61,16 +61,34 @@ async function collectSite(site, manualUserId) {
   }
   if (!result.me) return result;
 
-  // 4. 访问令牌：字段直取 → 候选验证 → GET /api/user/token → v1.x 轮换令牌兜底
-  const resolved = await resolveAccessToken(site, result.me, result.userId);
-  if (!resolved.token && bundle && bundle.access_token) {
-    const v = await tryVerify(bundle.access_token, result.userId, site);
-    if (v.ok) {
-      resolved.token = bundle.access_token;
-      resolved.source = "v1.x auth/refresh 的轮换令牌（短期有效，建议在站点生成系统访问令牌长期用）";
-      resolved.result = v;
+  // 4. 访问令牌：临时令牌只是钥匙 —— 先用它换长效系统访问令牌（GET /api/user/token），
+  //    换不到再走原有兜底链（/api/user/self 字段 → 候选验证 → GET /api/user/token），
+  //    最后才是临时轮换令牌兜底（标注短期）。
+  const temp = (bundle && bundle.access_token) || "";
+  let resolved = null;
+  if (temp) {
+    const long = await fetchLongLivedToken(site, temp, result.userId);
+    if (long.token) {
+      resolved = { token: long.token, source: long.source, result: long.result };
+    } else if (long.note) {
+      result.errors.push(long.note);
     }
   }
+  if (!resolved) {
+    const r = await resolveAccessToken(site, result.me, result.userId);
+    if (r.token) resolved = r;
+  }
+  if (!resolved && temp) {
+    const v = await tryVerify(temp, result.userId, site);
+    if (v.ok) {
+      resolved = {
+        token: temp,
+        source: "v1.x auth/refresh 的轮换令牌（短期有效，仅兜底 —— 建议生成系统访问令牌）",
+        result: v,
+      };
+    }
+  }
+  resolved = resolved || { token: "", source: "", note: "" };
   result.accessToken = resolved.token;
   result.accessTokenSource = resolved.source;
   result.accessTokenNote = resolved.note || "";
