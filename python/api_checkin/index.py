@@ -38,6 +38,11 @@
 #   ② 行格式 —— 写进 Environment secret 时推荐（类型是独立一段，天然无歧义）
 #        <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
 #
+#    ⚠️ 同一站点**同时**配 cookie 和 token = 两个账号，都会跑（分桶时 cookies 桶在前、
+#       tokens 桶在后；行格式按行序）。同一个号别两种都配 —— 第二次只会拿到「今日已签到」，
+#       白跑一次；两种都配是用来表达「这个站有两个号：一个用 cookie、一个用令牌」。
+#       每个账号只发一种凭证头（Cookie 或 Authorization，二选一），不会两个都带。
+#
 # 配置来源（优先级从高到低）：ref > vars / secrets > <项目目录>/.env
 # ref 层由 workflow 里那行 `KEY: ${{ inputs.KEY || secrets.KEY }}` 实现 ——
 # 本脚本不做任何特殊处理，ref / vars / secrets / .env 全都以普通环境变量到达。

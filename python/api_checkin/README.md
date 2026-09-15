@@ -100,6 +100,21 @@ https://api.example.com|小号|token|sk-bbb
 https://api.example.com|三号|cookie|session=ccc
 ```
 
+### 同一站点同时配 cookie 和 token = 两个账号
+
+**都会跑**，不存在「哪个生效」—— 每个账号只发一种凭证头（`kind` 是 `cookie` 就发 `Cookie:`，
+是 `token` 就发 `Authorization: Bearer`，不会两个都带）。
+
+| 写法 | 执行顺序 |
+|---|---|
+| JSON 分桶 `{"cookies":[…],"tokens":[…]}` | **`cookies` 桶在前**、`tokens` 桶在后（桶序固定，不是你写的顺序） |
+| 行格式写两行 | 按你写的**行序** |
+
+所以：
+
+- **同一个号**别两种都配 —— 第二次只会拿到「今日已签到」，白跑一次请求、日志多一条
+- 两种都配的正确含义是「这个站有**两个号**：一个用 cookie 登录、另一个用令牌」
+
 ### `.env` 里的写法不一样
 
 `.env` 是按行解析的，所以整个 `SITES` 要写成**一行**，换行用 `\n` 转义：

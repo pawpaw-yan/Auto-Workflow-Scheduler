@@ -498,9 +498,17 @@
         preview.value = currentText;
 
         const cookies = parsed.accounts.filter((a) => a.kind === "cookie").length;
-        errorBox.className = "acs-status ok";
-        errorBox.textContent = Object.keys(sites).length + " 个站点 / " + parsed.accounts.length
+        let summary = Object.keys(sites).length + " 个站点 / " + parsed.accounts.length
           + " 个账号（cookie " + cookies + "，token " + (parsed.accounts.length - cookies) + "）";
+
+        // 同一站点同时挂 cookie 和 token = 两个账号、各跑一次；同一个号别两种都配
+        const bothKinds = Object.keys(sites).filter((site) => sites[site].cookies && sites[site].tokens);
+        if (bothKinds.length) {
+          summary += "　⚠️ " + bothKinds.join("、") + " 同时配了 cookie 和 token —— 会当成两个账号各跑一次";
+        }
+
+        errorBox.className = "acs-status ok";
+        errorBox.textContent = summary;
       }
 
       fillBtn.style.display = fillable ? "" : "none";
