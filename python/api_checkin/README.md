@@ -564,25 +564,27 @@ https://api.example.com #2 [小号] cookie | repeat
 
 ### `响应不是 JSON（可能是 Cloudflare 人机校验 / WAF / 反代页面）`
 
-有站点在接口前面挂了**人机校验 / WAF**。这类东西的判断依据是「请求里带没带它下发的 cookie」，
-而 api_checkin 是纯 HTTP 请求、**一个 cookie 都不带**，所以大概率过不去。常见的两套：
+有站点在接口前面挂了**人机校验 / WAF**。常见的两套：
 
 | 特征 | 哪一家 | 怎么办 |
 |---|---|---|
-| 返回的 HTML 里是 `<script>var arg1='…';(function(a,c){…`，cookie 里有 `acw_tc` / `acw_sc__v2` | **阿里云 WAF** | 改用 **cookie 方式**，并把那几段（含 `acw_*`）**一起**带上 |
+| 返回的 HTML 里是 `<script>var arg1='…';(function(a,c){…`，cookie 里有 `acw_tc` / `acw_sc__v2` | **阿里云 WAF** | ✅ **脚本现在会自动解**（见下），无需任何操作 |
 | 返回 Cloudflare 的挑战页 | Cloudflare | 脚本不跑浏览器，过不去，只能手动签到 |
 
-> ⚠️ **这类站点别用令牌方式**：令牌走 `Authorization` 头，请求里**依然一个 cookie 都不带**，
-> WAF 照样拦。而 cookie 方式会把整段 cookie 一起发出去，才过得去。
+**阿里云 WAF 的 `acw_sc__v2` 挑战，脚本已经能自己过**：挑战页让浏览器执行一段 JS，
+把页面里的 40 位 `arg1` 按固定置换表重排、再与固定密钥逐字节异或，结果写进
+`acw_sc__v2` cookie 后重载。`index.py` 检测到这种响应时会**在本地算出这个 cookie、
+种进会话再重试**（最多两轮），所以这类站 scheduled 跑也没问题 —— 不再依赖你复制的那份
+`acw_*` cookie 是否还新鲜。
+
+> 仍然**推荐 cookie 方式**配这类站：`session=` 是长期登录凭证，`acw_*` 过期无所谓
+> （脚本会重新解）。Token 方式虽然也能过 WAF（求解不依赖 cookie），但部分站点还会
+> 叠加其它校验，cookie 的兼容性最好。
 >
-> 小助手里「验证访问令牌」显示 **🟡 站点响应正常，但令牌没被严格验证** 就是这个信号 ——
-> 严格验证（不带 cookie）被 WAF 拦下了，脚本自动带上 cookie 重试才通。**这种站请改用 cookie。**
+> ⚠️ 若 WAF 升级了算法（置换表或密钥变了），自动解会失效 —— 特征是重试后仍返回挑战页，
+> 报错信息与从前一样。届时需要按新版 JS 重新核对 `ACW_UNSBOX` / `ACW_MASK` 两个常量。
 >
-> ⚠️ 还有一层：**`acw_sc__v2` 会轮换**。它是挑战页里的 JS 算出来再写回 cookie 的，
-> 过一段时间值就变 —— 所以粘进 cron-job.org 的那份 cookie 里，`acw_*` 那几段**迟早过期**，
-> 到时签到会重新变成挑战页，重新复制一次即可。`session=` 那段才是长期的登录凭证。
->
-> 顺带解释「为什么脚本只读到 `acw_sc__v2` 一条」：它是**页面 JS 写的**（所以 JS 可见），
+> 顺带解释「为什么小助手只读到 `acw_sc__v2` 一条」：它是**页面 JS 写的**（所以 JS 可见），
 > 而 `session` / `acw_tc` / `cdn_sec_tc` 是服务端 `HttpOnly` 写的，JS 读不到 —— 与上面的
 > httpOnly 限制是同一件事。
 

@@ -558,6 +558,38 @@ class AuthError(Exception):
         self.hint = hint
 
 
+# ─────────────────────── 阿里云 WAF 的 acw_sc__v2 JS 挑战 ───────────────────────
+# 有的站（如阿里云 WAF 之后的）会先回一段混淆 JS：页面里有个 40 位十六进制的 arg1，
+# 按固定置换表重排（unsbox）、再与固定密钥逐字节异或（hexXor），结果写进
+# acw_sc__v2 cookie 后自动重载。浏览器会自己执行；脚本就得把这一步自己算出来。
+# 置换表与密钥在 WAF 的 JS 里是公开且长期固定的，变动时才需要跟着改。
+
+ACW_COOKIE = "acw_sc__v2"
+ACW_MASK = "3000176000856006061501533003690027800375"
+# 40 个位置（1 起算）构成的一个置换：out[k] = arg1[ACW_UNSBOX[k] - 1]
+ACW_UNSBOX = [
+    15, 35, 29, 24, 33, 16, 1, 38, 10, 9, 19, 31, 40, 27, 22, 23,
+    25, 13, 6, 11, 39, 18, 20, 8, 14, 21, 32, 26, 2, 30, 7, 4, 17,
+    5, 3, 28, 34, 37, 12, 36,
+]
+ACW_ARG1_RE = re.compile(r"""arg1=['"]([0-9A-Fa-f]{40})['"]""")
+
+
+def acw_sc__v2_of(arg1: str) -> str:
+    """按挑战页的算法由 arg1 算出 acw_sc__v2 的 cookie 值。"""
+    order = "".join(arg1[pos - 1] for pos in ACW_UNSBOX)
+    return "".join(
+        f"{int(order[i:i + 2], 16) ^ int(ACW_MASK[i:i + 2], 16):02x}"
+        for i in range(0, len(order), 2)
+    )
+
+
+def acw_challenge_arg1(body: str) -> Optional[str]:
+    """响应体是挑战页时取出 arg1；普通响应返回 None。"""
+    match = ACW_ARG1_RE.search(body or "")
+    return match.group(1) if match else None
+
+
 class SiteClient:
     """一个账号的 HTTP 会话。请求头按认证方式拼装。"""
 
@@ -567,6 +599,20 @@ class SiteClient:
         self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update(self._build_headers())
+        # Cookie 放进会话的 cookie 罐而不是 Cookie 头：requests 在罐里有 cookie 时
+        # 会用罐里的内容整个覆盖 Cookie 头 —— 下面过 WAF 挑战要往罐里种
+        # acw_sc__v2，静态会话要是还在头里就会被这一下冲掉。
+        if self.account.kind == AUTH_COOKIE:
+            self._seed_cookies(self.account.secret)
+
+    def _seed_cookies(self, cookie_text: str) -> None:
+        """把 `a=1; b=2` 形式的静态 Cookie 拆进会话罐（值含 = 也能拆对）。"""
+        for part in (cookie_text or "").split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, _, value = part.partition("=")
+                if name.strip():
+                    self.session.cookies.set(name.strip(), value)
 
     def __enter__(self) -> "SiteClient":
         return self
@@ -581,9 +627,7 @@ class SiteClient:
             "User-Agent": USER_AGENT,
         }
 
-        if self.account.kind == AUTH_COOKIE:
-            headers["Cookie"] = self.account.secret
-        else:
+        if self.account.kind == AUTH_TOKEN:
             headers["Authorization"] = f"Bearer {self.account.secret}"
 
         # 部分接口要求带用户标识；没配就不带（多数站点 cookie 模式下也不需要）
@@ -595,14 +639,27 @@ class SiteClient:
     def _log(self, emoji: str, message: str, force: bool = False) -> None:
         logger.info(f"{LogEmoji.SITE}[{self.account.site}] {emoji} {message}")
 
+    def _send(self, method: str, url: str):
+        try:
+            return self.session.request(method, url, timeout=self.timeout)
+        except requests.exceptions.RequestException as exc:
+            raise RequestError(f"网络错误：{exc}") from exc
+
     def request(self, method: str, path: str) -> dict:
         """发一个请求并返回解析后的 JSON。失败一律抛异常，由上层归类。"""
         url = f"{self.account.site}{path}"
+        response = self._send(method, url)
 
-        try:
-            response = self.session.request(method, url, timeout=self.timeout)
-        except requests.exceptions.RequestException as exc:
-            raise RequestError(f"网络错误：{exc}") from exc
+        # 命中阿里云 WAF 的 JS 挑战时自己算 acw_sc__v2、种进罐再重试。
+        # 最多解两轮 —— 个别部署会连着出两道；解不动就落到下面的正常报错。
+        for _ in range(2):
+            arg1 = acw_challenge_arg1(response.text or "")
+            if not arg1:
+                break
+            if self.verbose:
+                self._log(LogEmoji.STATUS, "命中 WAF 挑战页，已解出 acw_sc__v2，重试")
+            self.session.cookies.set(ACW_COOKIE, acw_sc__v2_of(arg1))
+            response = self._send(method, url)
 
         body = (response.text or "").strip()
 
