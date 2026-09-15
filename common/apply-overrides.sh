@@ -15,6 +15,12 @@
 # 用法：作为独立 step，放在 checkout 之后、其余业务 step 之前。
 #       值写入 GITHUB_ENV，因此对后续**所有** step 生效（含 check-secrets.sh）。
 #
+# 输出（供业务脚本读取，都只列名字、不含值）：
+#     OVERRIDE_APPLIED          本次被替换的全部项
+#     OVERRIDE_APPLIED_SECRETS  其中登记为机密的项（本脚本已就此打过 ::warning::）
+#       机密项被 ref 替换 = 把这些值公开，所以告警由本步统一发出，
+#       业务脚本不需要再判断「我这个键要不要提醒」。
+#
 # ⚠️ 安全边界：
 #     workflow_dispatch 的 inputs 不是机密 —— 它会出现在 run 的详情页和事件负载里。
 #     这个入口适合「临时替换非敏感配置」（域名、开关、计划、目标规格）；
@@ -71,6 +77,7 @@ is_secret() {
 }
 
 applied=""
+applied_secrets=""
 failed=0
 
 # jq -c：每条 entry 输出成一行紧凑 JSON，多行值会被转义成 \n，不会被 read 截断。
@@ -131,6 +138,9 @@ while IFS= read -r entry; do
   esac
 
   applied="${applied}${applied:+$'\n'}${name}"
+  if is_secret "$name"; then
+    applied_secrets="${applied_secrets}${applied_secrets:+$'\n'}${name}"
+  fi
 done < <(printf '%s' "$raw" | jq -c 'to_entries[]')
 
 if [ "$failed" -ne 0 ]; then
@@ -147,13 +157,21 @@ count=$(printf '%s\n' "$applied" | grep -c .)
 names=$(printf '%s' "$applied" | tr '\n' ' ')
 
 # 告诉后续业务脚本「本次被覆盖了哪些项」（只列名字，不含值）。
-# 例如 api_checkin 会据此判断 SITES 是不是来自 ref，从而在日志里提醒
-# 「workflow_dispatch 的 inputs 不是机密，公开仓库等于公开」。
 if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'OVERRIDE_APPLIED=%s\n' "$names" >> "$GITHUB_ENV"
 fi
 
 echo "::notice::本次运行通过 ref 传入参数替换了 ${count} 项配置：${names}"
+
+# 机密项被 ref 替换 = 把这些值公开。告警在这里统一发出，
+# 业务脚本不需要再各自判断「我这个键要不要提醒」。
+if [ -n "$applied_secrets" ]; then
+  secret_names=$(printf '%s' "$applied_secrets" | tr '\n' ' ')
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    printf 'OVERRIDE_APPLIED_SECRETS=%s\n' "$secret_names" >> "$GITHUB_ENV"
+  fi
+  printf '::warning::本次运行通过 ref（inputs.overrides）替换了机密项 %s —— workflow_dispatch 的 inputs 不是机密、也不受脱敏保护，公开仓库的 run 详情页任何人都能看到，请确认这些值可以公开。\n' "$secret_names"
+fi
 
 # 写进 Job Summary：只列名称，不列值。
 # 本步排在 check-secrets.sh 之前，所以这段提示出现在摘要最上方。
@@ -164,12 +182,22 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "本次通过 \`ref\` 派发时传入的参数（\`inputs.overrides\`）**替换了以下配置项**，"
     echo "它们**没有使用仓库里配置的 \`vars\` / \`secrets\`**："
     echo ""
-    echo "| 被替换的配置项 |"
-    echo "|---|"
+    echo "| 被替换的配置项 | 类型 |"
+    echo "|---|---|"
     printf '%s\n' "$applied" | while IFS= read -r applied_name; do
-      [ -n "$applied_name" ] && printf '| `%s` |\n' "$applied_name"
+      [ -n "$applied_name" ] || continue
+      if is_secret "$applied_name"; then
+        printf '| `%s` | ⚠️ **机密** |\n' "$applied_name"
+      else
+        printf '| `%s` | 普通 |\n' "$applied_name"
+      fi
     done
     echo ""
     echo "> 只显示名称，不显示值。排查配置问题时，请先确认本次是否传了参数。"
+    if [ -n "$applied_secrets" ]; then
+      echo ">"
+      echo "> ⚠️ **标记为机密的项是用 \`ref\` 传进来的** —— workflow_dispatch 的 inputs 不受脱敏保护，"
+      echo "> 公开仓库的 run 详情页任何人都能看到。长期配置请放 \`vars\` / \`secrets\`。"
+    fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
