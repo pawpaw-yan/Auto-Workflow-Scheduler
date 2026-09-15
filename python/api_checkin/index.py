@@ -59,11 +59,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 import traceback
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -593,6 +596,37 @@ def acw_challenge_arg1(body: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+# ─────────────────────── new-api v1.x 签到 PoW 求解 ───────────────────────
+# 部分部署给签到接口加了工作量证明：GET /api/user/pow/challenge?action=checkin
+# 下发 {challenge_id, prefix, difficulty}；客户端求 8 位十六进制 nonce，
+# 使 sha256(prefix + nonce) 的前导零比特数 ≥ difficulty，再以
+# POST /api/user/checkin?pow_challenge=..&pow_nonce=.. 提交。
+# 算法与该系前端内嵌的 PoW Worker 逐位一致。
+
+def _leading_zero_bits(data: bytes) -> int:
+    zero = 0
+    for byte in data:
+        if byte == 0:
+            zero += 8
+            continue
+        for shift in (7, 6, 5, 4, 3, 2, 1, 0):
+            if (byte >> shift) & 1:
+                return zero
+            zero += 1
+    return zero
+
+
+def solve_v1_pow(prefix: str, difficulty: int) -> str:
+    """返回满足难度要求的 8 位十六进制 nonce（与站点 Worker 的计数方式一致）。"""
+    counter = 0
+    while counter <= 0xFFFFFFFF:
+        nonce = f"{counter:08x}"
+        if _leading_zero_bits(hashlib.sha256((prefix + nonce).encode()).digest()) >= difficulty:
+            return nonce
+        counter += 1
+    raise RequestError("PoW 求解超出最大尝试次数（2^32）")
+
+
 class SiteClient:
     """一个账号的 HTTP 会话。请求头按认证方式拼装。"""
 
@@ -764,12 +798,32 @@ class SiteClient:
         body = self.request("GET", SELF_PATH)
         return _unwrap(body)
 
+    def _solve_v1_checkin_pow(self) -> Optional[str]:
+        """取 v1.x 签到 PoW 挑战并求解，返回查询串；拿不到挑战返回 None。"""
+        try:
+            data = self.request("GET", "/api/user/pow/challenge?action=checkin")
+        except RequestError:
+            return None
+        d = data.get("data") if isinstance(data, dict) else None
+        d = d if isinstance(d, dict) else {}
+        challenge_id = str(d.get("challenge_id") or "")
+        prefix = str(d.get("prefix") or "")
+        difficulty = int(d.get("difficulty") or 0)
+        if not challenge_id or not prefix:
+            return None
+        if self.verbose:
+            self._log(LogEmoji.STATUS, f"正在解签到 PoW（难度：{difficulty} 位前导零）…")
+        nonce = solve_v1_pow(prefix, difficulty)
+        return "pow_challenge=" + quote(challenge_id, safe="") + "&pow_nonce=" + quote(nonce, safe="")
+
     def checkin(self) -> Tuple[bool, str, object]:
         """执行签到，返回 (是否成功, 服务端消息, 原始 data)。
         标准 new-api 是 /api/user/checkin；部分定制 fork 把它挪到了 /api/checkin ——
-        404 时自动回退，成功的路径记在会话里避免重复试错。"""
+        404 时自动回退，成功的路径记在会话里避免重复试错。
+        签到接口若要求 PoW（v1.x 部分部署），自动取挑战、求解后带查询参数重试一次。"""
         paths = [self._checkin_path] if self._checkin_path else [CHECKIN_PATH, *CHECKIN_FALLBACK_PATHS]
         last_error: Optional[RequestError] = None
+        pow_retried = False
         for path in paths:
             try:
                 body = self.request("POST", path)
@@ -779,8 +833,14 @@ class SiteClient:
                     continue
                 raise   # 401 认证 / 5xx 等真实问题不回退，直接上抛
             self._checkin_path = path
-            success = bool(body.get("success"))
             message = str(body.get("message") or "")
+            if not body.get("success") and not pow_retried and re.search(r"\bpow\b", message, re.I):
+                pow_retried = True
+                query = self._solve_v1_checkin_pow()
+                if query:
+                    body = self.request("POST", path + "?" + query)
+                    message = str(body.get("message") or "")
+            success = bool(body.get("success"))
             if not success and re.search(r"turnstile|人机验证|验证码", message, re.I):
                 message += "（该站签到启用了 Turnstile 人机验证 —— 脚本无法自动签到，请在浏览器手动完成）"
             return success, message, body.get("data")
