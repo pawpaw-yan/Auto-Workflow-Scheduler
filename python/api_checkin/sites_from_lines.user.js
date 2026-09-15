@@ -420,11 +420,12 @@
     setTimeout(() => input.classList.remove("acs-flash"), 1600);
   }
 
-  function openConverter(targetInput) {
-    const ui = makePanel("行格式 → SITES JSON");
+  function openConverter(targetInput, initialLines) {
+    const ui = makePanel(initialLines ? "行格式 → SITES JSON（已从站点侧带入）" : "行格式 → SITES JSON");
     const body = ui.body;
 
     const inputArea = el("textarea", { rows: "7", spellcheck: "false", placeholder: FORMAT_HINT });
+    if (initialLines) inputArea.value = initialLines;
     const errorBox = el("div", { class: "acs-status" });
     const preview = el("textarea", {
       rows: "4", readonly: "readonly", spellcheck: "false", placeholder: "上面一旦有内容，这里实时显示结果",
@@ -828,9 +829,8 @@
     const cookieField = el("textarea", { rows: "2", spellcheck: "false", placeholder: "（读不到，可把 F12 → Network 里的 Cookie 头粘进来）" });
     const regenBtn = el("button", { text: "♻ 重新生成" });
 
-    // 两个独立的测试按钮：分别验访问令牌与 Cookie 会话
     const testTokenBtn = el("button", { text: "🔍 测试访问令牌" });
-    const testCookieBtn = el("button", { text: "🔍 测试 Cookie" });
+    const toSitesBtn = el("button", { class: "acs-primary", text: "→ 填进 SITES JSON" });
 
     let state = null;
 
@@ -857,29 +857,29 @@
     }
 
     /**
-     * 测试 Cookie 会话。
-     *
-     * ⚠️ 只能测「浏览器自己的会话」：Cookie 是 fetch 的**禁止头**，脚本没法把某个 Cookie
-     * 字符串塞进请求里。所以手填的 Cookie 无法直接验证 —— 能验的是「当前浏览器带上的会话
-     * 到底管不管用」，也就是 GM_cookie 读到的那些 cookie 有没有效。
+     * 用「当前站点 + 提取到的值」拼一行行格式，交给 SITES JSON 那边。
+     * 访问令牌优先（不过期）；没有令牌才退到 Cookie；两个都没有就返回空串。
      */
-    async function verifyCookie() {
-      const verifyCell = info.querySelector("[data-acs-token-verify]");
-      const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
+    function buildLineFromState() {
+      if (!state || !state.me) return "";
+      const label = state.me.username || state.me.display_name || location.hostname;
 
-      setVerify("正在测试 Cookie 会话…");
-      try {
-        const data = await api("/api/user/self");   // credentials: same-origin → 浏览器自己带 cookie
-        if (data && data.success === true) {
-          setVerify(cookieField.dataset.acsManual
-            ? "✅ 浏览器会话有效。注意：测的是浏览器自己带的 cookie；手填的那串脚本发不出去（Cookie 是禁止头），验不了"
-            : "✅ Cookie 会话有效（浏览器已自动带上读到的那些 cookie）");
-        } else {
-          setVerify("⚠️ Cookie 测试失败：接口返回 success=false —— " + JSON.stringify(data).slice(0, 140));
-        }
-      } catch (e) {
-        setVerify("⚠️ Cookie 测试失败：" + e.message);
+      const token = accessTokenField.value.trim();
+      if (token) {
+        return toLines([{
+          site: state.origin,
+          label: label,
+          kind: AUTH_TOKEN,
+          secret: token,
+          userId: String(state.me.id || ""),
+        }]);
       }
+
+      const cookie = cookieField.value.trim();
+      if (cookie) {
+        return toLines([{ site: state.origin, label: label, kind: AUTH_COOKIE, secret: cookie, userId: "" }]);
+      }
+      return "";
     }
 
     /**
@@ -998,7 +998,18 @@
     cookieField.addEventListener("input", () => { cookieField.dataset.acsManual = "1"; });
 
     testTokenBtn.addEventListener("click", () => { if (state) verifyAccess(); });
-    testCookieBtn.addEventListener("click", () => { if (state) verifyCookie(); });
+
+    toSitesBtn.addEventListener("click", () => {
+      const line = buildLineFromState();
+      if (!line) {
+        errorBox.className = "acs-status err";
+        errorBox.textContent = "访问令牌和 Cookie 至少要有一个才能拼出行格式 —— 先「🔍 测试访问令牌」，"
+          + "或把站点上复制的值粘进上面的框";
+        return;
+      }
+      ui.close();
+      openConverter(null, line);   // 跳到 SITES JSON，并把行格式填好
+    });
 
     regenBtn.addEventListener("click", async () => {
       if (!state) return;
@@ -1047,7 +1058,7 @@
     body.appendChild(valueRow("访问令牌", accessTokenField));
     body.appendChild(valueRow("Cookie", cookieField));
     body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [
-      testTokenBtn, testCookieBtn, el("div", { style: "flex:1" }), regenBtn,
+      testTokenBtn, toSitesBtn, el("div", { style: "flex:1" }), regenBtn,
     ]));
 
     body.appendChild(el("details", { style: "margin-top:10px", "data-acs-gmguide": "1" }, [
