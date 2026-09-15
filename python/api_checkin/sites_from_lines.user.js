@@ -728,6 +728,7 @@
       cookieSource: "document",
       sessionVisible: false,
       accessToken: "",
+      accessTokenSource: "",
       tokenCandidates: [],
       userFields: [],
       gmState: "missing",
@@ -765,7 +766,11 @@
     // 「系统访问令牌」：先看 /api/user/self，再退回前端缓存的 user 对象
     const localUser = userFromLocalStorage();
     result.accessToken = accessTokenFromUser(result.me) || accessTokenFromUser(localUser);
+    result.accessTokenSource = result.accessToken ? "user 对象字段" : "";
     result.userFields = Object.keys(result.me);   // 诊断用：字段名不确定时看这个
+
+    // ⚠️ GET /api/user/token 那个兜底**不在这里**做，它排在「候选扫描」之后 ——
+    // 顺序是有意的：老版本的路子能用，就绝不碰新接口。见 verifyAccess()。
 
     // 字段名各版本不一，所以把两边的候选都收着，由验证环节去挑真正能用的那个
     result.tokenCandidates = tokenCandidates(result.me).concat(tokenCandidates(localUser));
@@ -801,16 +806,6 @@
     }
   }
 
-  /** 「重新生成」系统访问令牌。⚠️ 会让旧令牌立刻失效，所以只能挂在明确的按钮后面 */
-  async function regenerateAccessToken() {
-    const data = await api("/api/user/token");
-    if (!data || data.success !== true) {
-      throw new Error((data && data.message) ? data.message : "重新生成失败（响应里没有 success）");
-    }
-    // 有的版本直接把新令牌放在 data 里，没有就回去重新读一次
-    return typeof data.data === "string" ? data.data : "";
-  }
-
   function openExtractor() {
     const ui = makePanel("api_checkin：提取账号");
     const body = ui.body;
@@ -827,7 +822,6 @@
     const idField = el("input", { type: "text", readonly: "readonly", spellcheck: "false", placeholder: "（未取到）" });
     const accessTokenField = el("input", { type: "text", spellcheck: "false", placeholder: "（没读到，可把站点上复制的值粘进来）" });
     const cookieField = el("textarea", { rows: "2", spellcheck: "false", placeholder: "（读不到，可把 F12 → Network 里的 Cookie 头粘进来）" });
-    const regenBtn = el("button", { text: "♻ 重新生成" });
 
     const testTokenBtn = el("button", { text: "🔍 测试访问令牌" });
     const toSitesBtn = el("button", { class: "acs-primary", text: "→ 填进 SITES JSON" });
@@ -891,39 +885,67 @@
       const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
       const userId = (state && state.me) ? state.me.id : currentUserId;
 
+      /** 认下这个令牌：填进框、清掉「手填」标记、记住来源 */
+      function accept(value, source) {
+        accessTokenField.value = value;
+        delete accessTokenField.dataset.acsManual;
+        if (state) {
+          state.accessToken = value;
+          state.accessTokenSource = source;
+        }
+        setVerify("✅ 系统访问令牌已验证可用（来源：" + source + "）");
+      }
+
       refreshValues();
 
-      // 字段名各版本不一：把 user 对象里所有 token 字段逐个**真发请求**去挑，谁能过就用谁
-      if (!accessTokenField.value.trim() && state && state.tokenCandidates.length) {
+      // ① 已经拿到值了（老版本的字段名，或人手填的）→ 直接验
+      if (accessTokenField.value.trim()) {
+        const key = accessTokenField.value.trim();
+        const source = (state && state.accessTokenSource) || (accessTokenField.dataset.acsManual ? "手工填写" : "已读到");
+        setVerify("正在验证系统访问令牌…");
+        const reason = await verifyToken(key, userId);
+        if (!reason) setVerify("✅ 系统访问令牌已验证可用（来源：" + source + "）");
+        else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过：" + reason);
+        else setVerify("⚠️ 系统访问令牌验证没通过：" + reason);
+        return;
+      }
+
+      if (!state) { setVerify("⚠️ 还没读到站点信息"); return; }
+
+      // ② 老版本可能有别的字段名：把 user 对象里所有 token 字段逐个**真发请求**去挑
+      if (state.tokenCandidates.length) {
         const names = state.tokenCandidates.map((item) => "`" + item.key + "`").join("、");
         setVerify("在 " + names + " 里找可用的访问令牌…");
 
         for (let i = 0; i < state.tokenCandidates.length; i++) {
           const candidate = state.tokenCandidates[i];
           if (await verifyToken(candidate.value, userId)) continue;   // 非空 = 没通过，试下一个
-          accessTokenField.value = candidate.value;
-          delete accessTokenField.dataset.acsManual;
-          state.accessToken = candidate.value;
-          setVerify("✅ 从字段 `" + candidate.key + "` 找到并验证通过");
+          accept(candidate.value, "字段 `" + candidate.key + "`");
           return;
         }
-
-        setVerify("⚠️ 这些字段都试了但没一个通过：" + names
-          + "。说明访问令牌可能压根没下发给前端 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框，或点「♻ 重新生成」");
-        return;
+        // 没通过也不急着退出，继续走 ③ 试新接口
       }
 
-      const key = accessTokenField.value.trim();
-      if (!key) {
-        setVerify("⚠️ 没读到系统访问令牌（个人设置 → 安全设置 → 系统访问令牌）；可复制后粘进下面的框，或点「♻ 重新生成」");
-        return;
-      }
+      // ③ 最后才用站点前端自己那个接口：GET /api/user/token
+      //    （站点「访问令牌」弹窗就是靠它拿的，是「有就返回原来的、没有才生成」，当读取用安全）
+      setVerify("字段里都没找到，改用站点自己的接口 GET /api/user/token…");
+      try {
+        const payload = (await api("/api/user/token")).data;
+        const fresh = typeof payload === "string"
+          ? payload.trim()
+          : ((payload && (payload.access_token || payload.token)) || "");
 
-      setVerify("正在验证系统访问令牌…");
-      const reason = await verifyToken(key, userId);
-      if (!reason) setVerify("✅ 系统访问令牌已验证可用");
-      else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过：" + reason);
-      else setVerify("⚠️ 系统访问令牌验证没通过：" + reason);
+        if (fresh) {
+          const reason = await verifyToken(String(fresh), userId);
+          if (!reason) { accept(String(fresh), "GET /api/user/token"); return; }
+          setVerify("⚠️ GET /api/user/token 返回了值，但验证没通过：" + reason);
+          return;
+        }
+        setVerify("⚠️ GET /api/user/token 没返回令牌 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框");
+      } catch (e) {
+        setVerify("⚠️ 读 /api/user/token 失败：" + e.message
+          + " —— 去站点「个人设置 → 安全设置」复制后粘进下面的框");
+      }
     }
 
     function renderInfo(message) {
@@ -980,8 +1002,8 @@
         await verifyAccess();
         errorBox.className = "acs-status ok";
         errorBox.textContent = state.accessToken
-          ? "已读到系统访问令牌"
-          : "没读到系统访问令牌 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框，或点「♻ 重新生成」";
+          ? "已读到系统访问令牌（来源：" + (state.accessTokenSource || "未知") + "）"
+          : "没读到系统访问令牌 —— 见上面的「验证结果」，或去站点「个人设置 → 安全设置」复制后粘进下面的框";
       } catch (e) {
         state = null;
         renderInfo();
@@ -1011,38 +1033,6 @@
       openConverter(null, line);   // 跳到 SITES JSON，并把行格式填好
     });
 
-    regenBtn.addEventListener("click", async () => {
-      if (!state) return;
-      const sure = window.confirm(
-        "确定重新生成系统访问令牌？\n\n"
-        + "⚠️ 旧令牌会立刻失效 —— 如果 api_checkin 的 Secret 里正用着旧值，签到会开始 401，记得换上去。"
-      );
-      if (!sure) return;
-
-      regenBtn.disabled = true;
-      errorBox.className = "acs-status";
-      errorBox.textContent = "正在重新生成…";
-      try {
-        const fresh = await regenerateAccessToken();
-        delete accessTokenField.dataset.acsManual;
-        if (fresh) {
-          state.accessToken = fresh;
-          refreshValues();
-        } else {
-          state = await collect(idInput.value);
-        }
-        await verifyAccess();
-        renderInfo();
-        errorBox.className = "acs-status ok";
-        errorBox.textContent = "已重新生成系统访问令牌 —— 记得把新值更新到 api_checkin 的 Secret 里";
-      } catch (e) {
-        errorBox.className = "acs-status err";
-        errorBox.textContent = "重新生成失败：" + e.message;
-      } finally {
-        regenBtn.disabled = false;
-      }
-    });
-
     body.appendChild(info);
     body.appendChild(errorBox);
     // new-api 强制要 New-Api-User，自动读不到时这里是唯一的兜底
@@ -1058,7 +1048,7 @@
     body.appendChild(valueRow("访问令牌", accessTokenField));
     body.appendChild(valueRow("Cookie", cookieField));
     body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [
-      testTokenBtn, toSitesBtn, el("div", { style: "flex:1" }), regenBtn,
+      testTokenBtn, toSitesBtn,
     ]));
 
     body.appendChild(el("details", { style: "margin-top:10px", "data-acs-gmguide": "1" }, [
