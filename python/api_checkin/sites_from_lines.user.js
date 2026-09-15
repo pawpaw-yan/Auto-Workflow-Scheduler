@@ -843,27 +843,25 @@
   }
 
   /**
-   * 用令牌**单独发一次真实请求**验证可用性。
+   * 单次验证尝试。验的是「拿着这个令牌去调 /api/user/self 会不会被接受」——
+   * 这正是 api_checkin 跑起来调的第一个接口，过了就说明签到也能过。
    *
-   * 验的不是「令牌能不能读出来」，而是「拿着它去调 /api/user/self 会不会被接受」——
-   * 这正是 api_checkin 跑起来时调的第一个接口，所以过了就说明签到也能过。
-   *
-   * credentials:'omit' 不带会话 cookie，免得被浏览器会话「救活」造成假阳性。
-   * 返回 { ok, detail }，detail 写清这次到底发了什么请求、结果如何，直接显示给用户 ——
-   * 免得看到「来源」两个字误以为验证走的是取令牌那个接口。
+   * omitCookie=true（严格）时不带站点 cookie，能排除「被浏览器会话救活」的假阳性；
+   * 代价是有些站点前面挂着 WAF（阿里云 acw_* 那套），不带 cookie 会被挑战页直接拦下。
    */
-  async function verifyToken(key, userId) {
-    const how = "发请求 GET /api/user/self（仅 Authorization: Bearer <令牌>，不带 cookie）";
-
-    if (looksMasked(key)) {
-      return { ok: false, detail: "没发请求：值是掩码（含 *），不是完整令牌" };
-    }
+  async function tryVerify(key, userId, omitCookie) {
+    const how = "发请求 GET /api/user/self（"
+      + (omitCookie
+        ? "仅 Authorization: Bearer <令牌>，不带 cookie"
+        : "带站点 cookie —— 因为不带会被 WAF 拦下")
+      + "）";
 
     try {
       const data = await api("/api/user/self", {
-        omitCookie: true,
+        omitCookie: omitCookie,
         headers: { Authorization: "Bearer " + key, "New-Api-User": String(userId) },
       });
+
       if (data && data.success === true) {
         // 把返回里的账号也带上：能证明「真的调通了，而且就是我这个号」，不只是布尔值
         const who = (data.data && (data.data.username || data.data.display_name)) || "";
@@ -876,8 +874,42 @@
       }
       return { ok: false, detail: how + " → success=false：" + JSON.stringify(data).slice(0, 140) };
     } catch (e) {
-      return { ok: false, detail: how + " → " + e.message };
+      const message = String(e.message || e);
+      // 「响应不是 JSON」= 多半被 WAF / 反爬的 JS 挑战页拦了，值得带上 cookie 再试一次
+      const waf = message.indexOf("不是 JSON") !== -1;
+      return {
+        ok: false,
+        waf: waf,
+        detail: how + " → " + message
+          + (waf ? "　← 这是 WAF / 反爬的挑战页，不是站点接口的响应" : ""),
+      };
     }
+  }
+
+  /**
+   * 验证令牌：**先严格**（不带 cookie），被 WAF 拦下才退一步带上 cookie。
+   * 两次的证据强度不同，所以文案里必须分开写 —— 带了 cookie 那次有可能是会话让它过的，
+   * 不能当成「令牌一定没问题」。
+   */
+  async function verifyToken(key, userId) {
+    if (looksMasked(key)) {
+      return { ok: false, detail: "没发请求：值是掩码（含 *），不是完整令牌" };
+    }
+
+    const strict = await tryVerify(key, userId, true);
+    if (strict.ok) return strict;
+    if (!strict.waf) return strict;
+
+    const loose = await tryVerify(key, userId, false);
+    if (loose.ok) {
+      return {
+        ok: true,
+        loose: true,
+        detail: loose.detail + "。⚠️ 这次带了站点 cookie，所以不能断定是令牌让它过的；"
+          + "但至少说明这个站点对带 cookie 的请求响应正常",
+      };
+    }
+    return { ok: false, detail: strict.detail + "；带 cookie 重试也失败：" + loose.detail };
   }
 
   function openExtractor() {
@@ -960,17 +992,28 @@
       const userId = (state && state.me) ? state.me.id : currentUserId;
 
       /**
-       * 认下这个令牌：填进框、清掉「手填」标记、记住来源。
-       * detail 是验证时**实际发出的那次请求**的结果 —— 单独标出来，别和「来源」混在一起。
+       * 报结果。🟡 = 站点响应正常、但令牌**没能严格验证**（请求被 WAF 挡了，只好带上 cookie 再试）。
+       * detail 是实际发出的那次请求的结果 —— 和「令牌来源」分开写，别再让人以为是同一件事。
        */
-      function accept(value, source, detail) {
+      function report(result, source) {
+        if (!result.ok) {
+          setVerify("⚠️ 验证没通过 · " + result.detail);
+          return;
+        }
+        setVerify((result.loose
+          ? "🟡 站点响应正常，但令牌没被严格验证 · "
+          : "✅ 验证通过 · ") + result.detail + " · 令牌来源：" + source);
+      }
+
+      /** 认下这个令牌：填进框、清掉「手填」标记、记住来源，再报结果 */
+      function accept(value, source, result) {
         accessTokenField.value = value;
         delete accessTokenField.dataset.acsManual;
         if (state) {
           state.accessToken = value;
           state.accessTokenSource = source;
         }
-        setVerify("✅ 验证通过 · " + detail + " · 令牌来源：" + source);
+        report(result, source);
       }
 
       refreshValues();
@@ -980,11 +1023,7 @@
         const key = accessTokenField.value.trim();
         const source = (state && state.accessTokenSource) || (accessTokenField.dataset.acsManual ? "手工填写" : "已读到");
         setVerify("正在发请求验证令牌…");
-
-        const result = await verifyToken(key, userId);
-        if (result.ok) setVerify("✅ 验证通过 · " + result.detail + " · 令牌来源：" + source);
-        else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过 · " + result.detail);
-        else setVerify("⚠️ 验证没通过 · " + result.detail);
+        report(await verifyToken(key, userId), source);
         return;
       }
 
@@ -999,7 +1038,7 @@
           const candidate = state.tokenCandidates[i];
           const result = await verifyToken(candidate.value, userId);
           if (!result.ok) continue;   // 没通过就试下一个
-          accept(candidate.value, "字段 `" + candidate.key + "`", result.detail);
+          accept(candidate.value, "字段 `" + candidate.key + "`", result);
           return;
         }
         // 没通过也不急着退出，继续走 ③ 试新接口
@@ -1017,7 +1056,7 @@
 
         if (fresh) {
           const result = await verifyToken(String(fresh), userId);
-          if (result.ok) { accept(String(fresh), "GET /api/user/token", result.detail); return; }
+          if (result.ok) { accept(String(fresh), "GET /api/user/token", result); return; }
           setVerify("⚠️ 从 GET /api/user/token 取到了值，但验证没通过 · " + result.detail);
           return;
         }

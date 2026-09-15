@@ -187,6 +187,10 @@ JSON 适合**派发**（`workflow_dispatch` 的 input 只有字符串通道）�
   卡片里有一行 **GM_cookie 状态**，会直接说明卡在哪一步（没启用 / 调用失败 / 返回空 / 超时等）；
   下面有折叠的「怎么开启 GM_cookie」分步指引（默认收起，要用再展开）。
 
+  > ⚠️ 就算把 Cookie 权限开了，**正式版篡改猴依然读不到 httpOnly 的会话 cookie**（只有 Beta 行）。
+  > 这时「Cookie」一行会显示「只读到 N 条非会话 cookie」—— 那就把 F12 里复制的**整段**粘进
+  > 那个可编辑的「Cookie」框（含 `session=` 和 `acw_*` 那几段）。
+
   所以**能用访问令牌就别折腾 Cookie** —— 令牌不会过期，也没有这些限制
 
 - **令牌会被真的验证**：用 `credentials:'omit'`（不带会话 cookie）单独发一次请求，
@@ -545,8 +549,19 @@ https://api.example.com #2 [小号] cookie | repeat
 
 ### `响应不是 JSON（可能是 Cloudflare 人机校验 / WAF / 反代页面）`
 
-有站点在签到接口前面挂了 **Cloudflare Turnstile 人机校验**。这种情况脚本无法通过 ——
-它只做纯 HTTP 请求，不跑浏览器。这类站只能手动签到。
+有站点在接口前面挂了**人机校验 / WAF**。这类东西的判断依据是「请求里带没带它下发的 cookie」，
+而 api_checkin 是纯 HTTP 请求、**一个 cookie 都不带**，所以大概率过不去。常见的两套：
+
+| 特征 | 哪一家 | 怎么办 |
+|---|---|---|
+| 返回的 HTML 里是 `<script>var arg1='…';(function(a,c){…`，cookie 里有 `acw_tc` / `acw_sc__v2` | **阿里云 WAF** | 改用 **cookie 方式**，并把那几段（含 `acw_*`）**一起**带上 |
+| 返回 Cloudflare 的挑战页 | Cloudflare | 脚本不跑浏览器，过不去，只能手动签到 |
+
+> ⚠️ **这类站点别用令牌方式**：令牌走 `Authorization` 头，请求里**依然一个 cookie 都不带**，
+> WAF 照样拦。而 cookie 方式会把整段 cookie 一起发出去，才过得去。
+>
+> 小助手里「验证访问令牌」显示 **🟡 站点响应正常，但令牌没被严格验证** 就是这个信号 ——
+> 严格验证（不带 cookie）被 WAF 拦下了，脚本自动带上 cookie 重试才通。**这种站请改用 cookie。**
 
 也可能是站点临时故障或反代返回了 HTML 错误页，可以过一会儿重跑一次确认。
 
