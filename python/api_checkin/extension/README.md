@@ -1,4 +1,4 @@
-﻿# api_checkin 账号小助手（Chrome 扩展）
+# api_checkin 账号小助手（Chrome 扩展）
 
 油猴脚本 `../sites_from_lines.user.js` 的扩展版。油猴受页面沙箱限制，
 扩展跑在浏览器扩展上下文里，多了三样油猴做不到的能力：
@@ -19,7 +19,11 @@
 
 ## 用法
 
-**提取账号**：在已登录的 new-api / one-api 站点页点扩展图标（站点地址自动填好）→ 读取。
+**呼出**：任意页面右上角有可拖动的「账号小助手」按钮（拖过的位置会记住），点开是二级菜单：
+「🔑 提取账号」/「🧾 SITES JSON」，弹出居中的毛玻璃面板（Esc / 点遮罩 / × 关闭）。
+工具栏图标点开的是同一份 UI，两条入口等价。
+
+**提取账号**：在已登录的 new-api / one-api 站点页打开面板（站点地址自动填好）→ 读取。
 依次拿到：完整 Cookie（含 httpOnly）、用户 ID（站点 localStorage 兜底 + 手填框）、
 会话有效性（真发请求过 WAF）、访问令牌（`/api/user/self` 的字段 → 候选字段逐个真验证
 → `GET /api/user/token`；掩码形如 `sk-abc1****WXYZ` 的值直接跳过，绝不交给没验证过的值）。
@@ -40,7 +44,9 @@
 | `lib/verify.js` | 两级令牌验证（严格模式 → 被 WAF 拦才带 cookie 重试） |
 | `lib/access-token.js` | 访问令牌的三级来源，全程真验证 |
 | `lib/collect.js` | 单站点提取主流程（每步失败都记进 errors，不丢已拿到的值） |
-| `popup/` | 弹窗两个面板（提取账号 / SITES JSON） |
+| `popup/` | 面板 UI（工具栏图标与页面内按钮共用同一份） |
+| `content/content.js` | 页面内注入：可拖动呼出按钮 + 二级菜单 + 居中面板（内嵌 popup.html 的 iframe，扩展权限完整保留） |
+| `content/content.css` | 注入元素的样式（类名全部带 acsx- 前缀，不碰宿主页面） |
 
 ## 隐私
 

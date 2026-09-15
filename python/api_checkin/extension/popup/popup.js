@@ -1,4 +1,4 @@
-﻿/* popup.js —— 弹窗的骨架：标签切换、默认站点、通用复制 */
+/* popup.js —— 弹窗的骨架：标签切换、默认站点、通用复制 */
 
 "use strict";
 
@@ -50,5 +50,15 @@ document.querySelectorAll("button.copy[data-target]").forEach((button) => {
   button.addEventListener("click", () => copyText(byId(button.dataset.target).value, button));
 });
 
-byId("coreVersion").textContent = "扩展 v1.0.0";
+// 深链：content.js 的 iframe 带 ?tab=sites/extract 直达对应面板
+switchTab(new URLSearchParams(location.search).get("tab") === "sites" ? "sites" : "extract");
+
+// 焦点在 iframe 内时，外层收不到 keydown —— Esc 在这里转发给外层收起面板
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && window.parent !== window) {
+    window.parent.postMessage({ type: "acsx-close" }, "*");
+  }
+});
+
+byId("coreVersion").textContent = "扩展 v1.1.0";
 initDefaultSite();
