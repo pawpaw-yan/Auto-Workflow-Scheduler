@@ -274,7 +274,7 @@ workflow 的 `env:` 里已经把三者映射成了脚本实际读取的 `GRAB_OC
 ## 常见问题
 
 > 通用问题（变量没生效、Summary 是空的、调度器没触发……）见
-> [根 README「常见问题（通用）」](../../README.md#11-常见问题通用)。下面是本项目专属的。
+> [根 README「常见问题（通用）」](../../README.md#10-常见问题通用)。下面是本项目专属的。
 
 ### `NotAuthorizedOrNotFound` / `401`
 
@@ -352,8 +352,7 @@ python index.py
 （注意 `OCI_CLI_KEY_FILE` 不在默认的覆盖白名单里，想用参数覆盖它得先在 workflow 里加 `OVERRIDE_NAMES`。）
 
 > 💡 不想每次 export 的话，可以把项目目录下的 `.env.example` 复制成 `.env` 填好 ——
-> `index.py` 启动时会自己读它，把没设置或为空的项补上（详见
-> [根 README「在本地跑」](../../README.md#9-在本地跑)）。
+> `index.py` 启动时会自己读它，把没设置或为空的项补上。
 
 ---
 
@@ -378,4 +377,4 @@ python index.py
 | `python/common/logging_config.py` | Python 语言级共享的日志初始化 |
 
 > 通用层的 6 个 shell 脚本、总入口 workflow、`.gitignore` 等，见
-> [根 README「文件速查」](../../README.md#12-文件速查)。
+> [根 README「文件速查」](../../README.md#11-文件速查)。

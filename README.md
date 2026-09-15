@@ -32,82 +32,25 @@
 - [6. 配置体系（通用）](#6-配置体系通用)
 - [7. 怎么触发一次运行](#7-怎么触发一次运行)
 - [8. 跑完以后看什么](#8-跑完以后看什么)
-- [9. 在本地跑](#9-在本地跑)
-- [10. 新增一个任务](#10-新增一个任务)
-- [11. 常见问题（通用）](#11-常见问题通用)
-- [12. 文件速查](#12-文件速查)
+- [9. 新增一个任务](#9-新增一个任务)
+- [10. 常见问题（通用）](#10-常见问题通用)
+- [11. 文件速查](#11-文件速查)
 
 ---
 
 ## 郑重提示：不要把机密写进 .env
 
-**一句话结论：cookie、API 私钥、token 这类真正的凭据，一律放 GitHub 的 Secrets，不要写进 `.env`。**
+**cookie、API 私钥、token 这类凭据一律放 Secrets，不要写进 `.env`。**
 
-`.env` 这个机制只是为了「本地调试时填点不敏感的东西」，**不要**把它当配置文件的正式载体，更不要往里塞凭据。
+`.env` 是明文文件，提交了就进 git 历史、删不干净；GitHub 的日志脱敏也只认 Secrets 的值，`.env` 里的不会被打码。
 
-为什么，按严重程度排：
-
-| # | 原因 | 后果 |
-|---|---|---|
-| 1 | **`.env` 就是一个明文文件，没有任何加密** | 一次 `git add .` 手滑就把凭据提交进了 git 历史。git 历史里的东西**删不干净**，等于永久泄露 |
-| 2 | **GitHub 的日志自动脱敏对 `.env` 里的值基本失效** | GitHub 只按「完整的 Secrets 值」做字面匹配。`.env` 里的值是本地明文读进来的，跟 Secrets 记录对不上，**脱敏不会触发** |
-| 3 | **`.env` 很容易被顺手复制、贴给同事、发到群里排查问题** | 这是最常见的泄露方式，而且往往事后才发现 |
-| 4 | **`.env` 会被当成「本地的东西」而放松警惕** | 但如果哪天你把它放到自建 runner 的工作区里，它就会长期生效，比 Secrets 更难被注意到 |
-
-**正确的做法：**
-
-| 想做的事 | 用什么 |
-|---|---|
-| 长期生效的凭据（cookie、私钥） | **Environment secrets** |
-| 长期生效的非敏感配置（域名、开关、目标规格） | **Environment variables** |
-| 临时改一次试试，跑完就忘 | **参数覆盖 `inputs.overrides`**（见第 6.4 节） |
-| 本地调试想少 export 几个变量 | `.env`（**只放非敏感项**） |
-
-> 本地跑确实需要凭据时，请用 `export` 临时设进程环境变量（不落盘，关掉终端就没了），
-> 或者用 `OCI_CLI_KEY_FILE` 这种「指向一个已存在文件」的方式，而不是把私钥内容抄进 `.env`。
->
-> 另外 `.env.example`（模板）**是要提交到仓库的**，所以里面**永远只放占位符**，不要填真值。
+> 临时改配置请用[参数覆盖](#64-参数覆盖临时替换一次配置)。
 
 ---
 
 ## 1. 这个仓库解决什么问题
 
-### 1.1 为什么不用 GitHub 自带的定时任务
-
-GitHub Actions 自带 `schedule`（cron）触发，但实测**非常不准**：
-
-- 高峰期会延迟几十分钟甚至几小时
-- 仓库长期不活跃时会被**自动停用**
-- 最短间隔 5 分钟，但触发时间完全不可控
-
-对于「抢一台缺货的服务器」这种需求，等它触发黄瓜菜都凉了。
-
-### 1.2 所以用「外部调度器 + API 派发」
-
-```
-外部调度器（cron-job.org 等）
-        ↓  定时 POST 一个 HTTP 请求
-GitHub API  → 触发指定 workflow
-        ↓
-workflow 跑你的脚本
-        ↓
-结果写进 Job Summary + 日志（+ 可选推送）
-```
-
-**外部调度器只负责「按时敲门」，实际干活的是 GitHub Actions**，所以：
-
-- 服务器不用你维护（GitHub 免费额度：公开仓库不限时长，私有仓库每月 2000 分钟）
-- 定时准不准只取决于那个调度器（cron-job.org 之类基本准时）
-- 每个任务独立成一个项目目录 + 一个 workflow + 一个 Environment，互不干扰
-
-### 1.3 设计原则
-
-| 原则 | 具体表现 |
-|---|---|
-| **workflow 只做声明** | 每个项目的 `.yml` 里只有「配置 + 调用哪个脚本」，没有逻辑 |
-| **通用逻辑集中在 `common/`** | 依赖安装、配置自检、参数覆盖、`.env` 加载、执行、摘要渲染，全部是跨语言共享的 shell 脚本 |
-| **业务脚本零耦合** | `index.py` 完全不知道 GitHub Actions 的存在，本地和 CI 行为一致 |
-| **失败也要有输出** | 摘要 step 用 `if: always()`，脚本崩了也能看到已经产生的日志 |
+GitHub 自带的定时任务不准、还会被自动停用，所以改用**外部调度器定时打 API** 来触发 Actions 跑脚本 —— 服务器不用自己维护，每个任务互相隔离。
 
 ---
 
@@ -127,40 +70,13 @@ workflow 跑你的脚本
 ```
 Auto-Workflow-Scheduler/
 │
-├── README.md                        ← 你正在看的这个：通用说明（结构 / 流程图 / 配置体系 / 触发 / FAQ）
-│
-├── common/                          ★ 跨语言共享的「通用逻辑」，全是 shell 脚本
-│   ├── install-deps.sh                 按语言装依赖（公共 + 项目独有，两级）
-│   ├── check-secrets.sh                配置自检（默认整步跳过，开调试开关才输出）
-│   ├── apply-overrides.sh              参数覆盖层（最高优先级）
-│   ├── execute.sh                      执行入口脚本，输出同时进日志和 output.log
-│   └── render-summary.sh               把 output.log 渲染成 Job Summary
-│
-├── .github/workflows/
-│   ├── run-project.yml                 总入口：按 project 参数派发到对应项目
-│   ├── glados_checkin.yml              项目 workflow（只做声明）
-│   └── oracle-abc.yml                  项目 workflow（只做声明）
-│
-├── python/                          ★ Python 语言目录
-│   ├── requirements.txt                语言级公共依赖（所有 Python 项目共用）
-│   ├── common/                         语言级共享代码包
-│   │   ├── __init__.py
-│   │   ├── logging_config.py              日志初始化（统一格式，所有 Python 项目共用）
-│   │   └── dotenv.py                      .env 读取（最低优先级，业务脚本启动时自己调）
-│   │
-│   ├── glados_checkin/                 项目目录
-│   │   ├── index.py                       入口脚本（业务逻辑）
-│   │   ├── requirements.txt               项目独有依赖（requests）
-│   │   ├── .env.example                   .env 模板（提交；只放占位符）
-│   │   └── README.md                      业务说明
-│   │
-│   └── oracle-abc/                     项目目录
-│       ├── index.py                       入口脚本（业务逻辑）
-│       ├── requirements.txt               项目独有依赖（oci）
-│       ├── .env.example                   .env 模板
-│       └── README.md                      业务说明
-│
-└── .gitignore                      忽略 output.log 和 .env（但不忽略 .env.example）
+├── README.md                        通用说明（本文件）
+├── common/                          ★ 跨语言共享的通用逻辑（shell 脚本）
+├── .github/workflows/               run-project.yml 总入口 + 每个项目一个 workflow
+└── python/                          ★ Python 语言目录
+    ├── common/                      语言级共享代码
+    ├── glados_checkin/              项目目录：GLaDOS / Railgun 签到
+    └── oracle-abc/                  项目目录：抢 OCI Ampere A1
 ```
 
 ### 3.1 三个概念别搞混
@@ -169,11 +85,7 @@ Auto-Workflow-Scheduler/
 |---|---|---|
 | **仓库根的 `common/`** | **跨语言**通用逻辑，shell 脚本，所有语言的项目都用 | `common/*.sh` |
 | **`python/common/`** | **Python 语言级**共享代码，只有 Python 项目用 | `python/common/*.py` |
-| **`python/<项目>/`** | 单个任务的全部内容：入口脚本 + 依赖 + `.env.example` + 说明 | – |
-
-> 为什么 `index.py` 开头要往 `sys.path` 里插两个目录？
-> 因为它比包根 `python/` 深一层，得把 `python/` 加进搜索路径才能 `from common.logging_config import ...`。
-> 这样无论从仓库根目录还是从项目目录启动都能正常导入。
+| **`python/<项目>/`** | 单个任务的全部内容（脚本 + 依赖 + 说明） | 一个任务一个目录 |
 
 ### 3.2 命名约定
 
@@ -186,19 +98,6 @@ Auto-Workflow-Scheduler/
 ## 4. 一次运行到底发生了什么（流程图）
 
 ### 4.1 整体流程
-
-```mermaid
-flowchart TD
-    A["外部调度器 cron-job.org<br/>或 Actions 页面手动 / API"] --> B["run-project.yml<br/>总入口，按 project 参数派发"]
-    B --> C["项目 workflow<br/>glados_checkin.yml / oracle-abc.yml"]
-    C --> D["第 1 步 Apply overrides<br/>应用 inputs.overrides（最高优先级）"]
-    D --> E["第 2 步 Check secrets<br/>调试开关打开时才执行"]
-    E --> F["第 3 步 Install dependencies<br/>公共依赖 + 项目独有依赖"]
-    F --> G["第 4 步 Run<br/>execute.sh 执行 index.py，输出 tee 到 output.log<br/>index.py 启动时自己读 .env 补空位"]
-    G --> H["第 5 步 Job Summary<br/>render-summary.sh 写摘要"]
-```
-
-不想看 mermaid 的话，纯文字版：
 
 ```
 外部调度器 / 手动 / API
@@ -420,7 +319,7 @@ fi                             # 空 / 未设置 → 由 .env 补上
 
 > ⚠️ **常见坑**：如果误把某个 Variable 建成了 Secret（或反过来，把引用前缀写错 —— 该用 `vars.` 却写了 `secrets.`），
 > GitHub **不会报错**，只会静默解析成**空字符串**，然后代码回退到默认值。
-> 表现就是「我明明配了，怎么没生效」。用第 8.3 节的配置自检来确认。
+> 表现就是「我明明配了，怎么没生效」。用第 8 节的配置自检来确认。
 
 ### 6.3 仓库级 vs Environment 级
 
@@ -498,8 +397,7 @@ cp python/glados_checkin/.env.example python/glados_checkin/.env
 
 同目录下的 `.env` 才是实际生效的那个，**已被 `.gitignore` 忽略**。
 
-> ✅ 这一层由**业务脚本自己在启动时读取**（`python/common/dotenv.py`），
-> 所以**本地 `python index.py` 同样生效**（见 [9.2](#92-怎么给配置)）。
+> ✅ 这一层由**业务脚本自己在启动时读取**（`python/common/dotenv.py`），本地和 CI 都生效。
 > 因为它跑在最后，天生只能捡前两层剩下的空位。
 >
 > 它**只用来放非敏感项** —— 原因见开头的[郑重提示](#郑重提示不要把机密写进-env)。
@@ -561,206 +459,16 @@ Content-Type: application/json
 
 ## 8. 跑完以后看什么
 
-### 8.1 日志
-
-格式统一：
-
-```
-YYYY-MM-DD HH:MM:SS | LEVEL   | message
-```
-
-由 `python/common/logging_config.py` 初始化，所有 Python 项目共用，所以每个项目的日志长得一样。
-
-### 8.2 执行摘要（Job Summary）
-
-**业务脚本完全不需要为它做任何事** —— 它照常往 stdout 打日志就行。摘要是 workflow 层做的，分两步：
-
-| 步骤 | 脚本 | 做什么 |
-|---|---|---|
-| `Run` | `common/execute.sh` | 执行入口脚本，用 `tee` 把输出**同时**写进日志和 `<项目目录>/output.log`（日志仍实时可见） |
-| `Job Summary` | `common/render-summary.sh` | 读 `output.log`，包成 Markdown 写进 `$GITHUB_STEP_SUMMARY` |
-
-对应的 workflow 片段：
-
-```yaml
-- name: Run
-  run: bash common/execute.sh
-
-- name: Job Summary
-  if: always()          # 关键：失败时也要把已产生的输出带出来
-  env:
-    SUMMARY_TITLE: 项目的显示名
-  run: bash common/render-summary.sh
-```
-
-结果：**不用点进日志 Tab**，在 run 列表页就能直接看到输出。
-
-| 设计要点 | 说明 |
-|---|---|
-| 业务脚本零耦合 | `index.py` 根本不知道 GitHub Actions 存在，本地与 CI 行为一致 |
-| 通用 | 任何项目只要经 `execute.sh` 执行，就能用 `render-summary.sh` 出摘要 |
-| 失败也有摘要 | 独立 step + `if: always()`，`Run` 失败时已产生的输出不会丢 |
-| 本地静默跳过 | 没有 `GITHUB_STEP_SUMMARY` 时直接跳过，不报错 |
-
-`output.log` 已加入 `.gitignore`。
-
-### 8.3 配置自检
-
-> **自检默认整步跳过** —— `common/check-secrets.sh` 什么都不输出，日志里连表都没有。
-> 只有打开调试开关后才会跑。这是故意的：公开仓库的 Actions 日志任何人都能读，
-> 而 Variables **完全不受 GitHub 自动脱敏保护**，所以默认连表都不打。
-
-打开调试开关后，它会输出这样一张表（同时写入 Job Summary）：
-
-```
-配置自检（调试模式已开启：DEBUG_MODE=true）
-Environment : python_glados_checkin
-
-NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
------------------------- --------- ------- --------- --------------------
-COOKIES                  secret    no      135       fdc2b45c76e7
-PUSHDEER_SENDKEY         secret    yes     0         -
-DOMAINS                  variable  no      26        glados.cloud
-railgun.info
-GLADOS_EXCHANGE_PLAN     variable  no      7         plan500
-GLADOS_VERBOSE           variable  no      4         true
-```
-
-| 类型 | 展示内容 | 说明 |
-|---|---|---|
-| `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见。**无论任何开关都不会打印明文** |
-| `variable` | 明文值（超 60 字符自动截断） | 既然是主动开开关来排查，就直接给值；`LENGTH` 列保留完整长度 |
-| 未开开关 | **什么都不输出** | 公开仓库日志任何人可读，默认连表都不打 |
-
-**怎么用它判断问题：**
-
-| 现象 | 含义 |
-|---|---|
-| `EMPTY` 为 `yes`、`LENGTH` 为 `0` | **没注入成功** —— 没建、名字拼错、或引用前缀写错（该用 `vars.` 却写了 `secrets.`） |
-| `variable` 行 `LENGTH` 大于 0 | 注入成功，而且能直接看到生效值 |
-| `secret` 行有 12 位指纹 | 注入成功（值不可见，只能靠指纹比对是否被人改过） |
-
-**指纹的用途**：同一 secret 在不同环境里指纹相同 → 配的是同一个值；同一环境跨运行指纹变了 → 说明有人改过。
-
-自检范围由 workflow 里的两个变量控制：
-
-```yaml
-SECRET_NAMES:   "COOKIES PUSHDEER_SENDKEY"
-VARIABLE_NAMES: "DOMAINS GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
-```
-
-> 新增配置项时，记得同时把名字加到对应这一类里，否则不会被自检。
-> 这两份清单还有第二个用途：**参数覆盖的白名单**默认就取它们，没登记的项不允许被 `inputs.overrides` 覆盖。
-> ⚠️ 这里必须写**进程里真实存在的变量名**，不是 GitHub Variable 的显示名 —— 有些项目两者不同名。
-
-### 8.4 调试开关：怎么打开自检
-
-需要排查配置时，**打开开关 → 重跑一次 → 用完关掉**：
-
-| 开关 | 配在哪 | 作用范围 |
-|---|---|---|
-| `DEBUG_MODE` | **项目 Environment → Variables** | **只影响本项目** |
-| `COMMON_DEBUG_MODE` | **仓库级 Variables** | 影响所有项目 |
-
-判定规则：
-
-- 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；**其余值一律视为关闭**
-- **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），所以可以用 `DEBUG_MODE=false` 单独关掉某个已被全局打开的环境
-- 两者都未设 / 非真值 → **整步跳过**（fail-closed）
-
-> ⚠️ **开关靠 workflow 的 `env:` 桥接才生效** —— 脚本只认进程环境变量：
-> ```yaml
-> DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
-> COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
-> ```
-> **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
->
-> ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。
-> 它只决定「要不要把它们写进公开日志」。
+- **日志**：格式统一为 `时间 | 级别 | 内容`；执行完 `render-summary.sh` 会把输出渲染进 **Job Summary**，不用点日志 Tab。
+- **配置没生效**：把 `DEBUG_MODE` 设为 `true` 重跑，`Check secrets` 会打印自检表 —— `EMPTY=yes` 或 `LENGTH=0` 就是没注进去（secret 只显示 HMAC 指纹，不打明文）。用完关掉。
 
 ---
 
-## 9. 在本地跑
-
-### 9.1 通用步骤
-
-```bash
-# 1. 进项目目录
-cd python/<项目名>
-
-# 2. 装依赖：先语言级公共，再项目独有
-pip install -r ../requirements.txt
-pip install -r requirements.txt
-
-# 3. 给配置（见 9.2），然后跑
-python index.py
-```
-
-### 9.2 怎么给配置
-
-本地没有 GitHub 的 vars / secrets，所以要自己把配置塞进进程环境。
-
-**方式一：临时设环境变量（适合改一两个值试一下）**
-
-不落盘，关掉终端就没了，也不会留任何文件。
-
-Linux / macOS：
-
-```bash
-cd python/<项目名>
-VAR1='xxx' VAR2='yyy' python index.py
-```
-
-Windows PowerShell：
-
-```powershell
-cd python/<项目名>
-$env:VAR1 = "xxx"
-$env:VAR2 = "yyy"
-python index.py
-```
-
-**多行值**用 here-string：
-
-```powershell
-$env:DOMAINS = @"
-glados.cloud
-railgun.info
-"@
-```
-
-**方式二：`.env` 文件（推荐，填一次长期用）**
-
-每个项目目录下都有 `.env.example` 模板，里面把该写哪些键、怎么写都列好了：
-
-```bash
-cp python/<项目名>/.env.example python/<项目名>/.env
-```
-
-填完之后**直接 `python index.py` 就行** —— 业务脚本启动时会自己读同目录的 `.env`，
-把**当前没设置或为空**的项填上。
-
-> 本地没有任何 vars / secrets，所以 `.env` 正好能把配置全补齐，一次填完以后不用再 set。
-> 反过来，某个键你要是已经 `export` 了，`.env` 里那一行会被忽略（上层优先）。
->
-> `.env` 里**只放非敏感项** —— 原因见开头的[郑重提示](#郑重提示不要把机密写进-env)。
-
-### 9.3 本地行为差异
-
-| 差异 | 说明 |
-|---|---|
-| `::add-mask::` 不注册 | 脚本会检测 `GITHUB_ACTIONS` 环境变量，本地自动跳过，不会往 stdout 打噪音 |
-| Job Summary 不生成 | 没有 `GITHUB_STEP_SUMMARY` 时 `render-summary.sh` 直接跳过 |
-| `.env` 照常生效 | 由 `python/common/dotenv.py` 在脚本启动时读取，和 CI 里同一套规则 |
-| 参数覆盖不可用 | `inputs.overrides` 也是 workflow 层的概念，本地没有 |
-
----
-
-## 10. 新增一个任务
+## 9. 新增一个任务
 
 以新增 `python/xxx_checkin` 为例：
 
-### 10.1 建目录和脚本
+### 9.1 建目录和脚本
 
 ```
 python/xxx_checkin/
@@ -785,7 +493,7 @@ from common.logging_config import init_logger
 logger = init_logger("xxx_checkin")
 ```
 
-### 10.2 复制一个 workflow
+### 9.2 复制一个 workflow
 
 复制 `.github/workflows/glados_checkin.yml`，改**四处**：
 
@@ -796,7 +504,7 @@ logger = init_logger("xxx_checkin")
 | `environment.name:` | 你要用的 Environment 名 |
 | `env: ENV_NAME / PROJECT / ENTRY` | 对应的环境名 / 项目目录名 / 入口脚本路径 |
 
-### 10.3 别漏掉这几行
+### 9.3 别漏掉这几行
 
 复制完检查一下有没有这些（它们是「通用层」生效的前提）：
 
@@ -822,7 +530,7 @@ SECRET_NAMES:   "..."
 VARIABLE_NAMES: "..."
 ```
 
-### 10.4 加 step
+### 9.4 加 step
 
 `.env` 不用管 —— 它由业务脚本自己在启动时读取（`python/common/dotenv.py`），workflow 里不需要额外步骤。
 
@@ -839,11 +547,11 @@ steps:
     run: bash common/execute.sh
 ```
 
-### 10.5 建 Environment 并配好 secrets / variables
+### 9.5 建 Environment 并配好 secrets / variables
 
 见[第 5 章](#5-快速开始手把手)。名字要和 workflow 里写的一致。
 
-### 10.6 验证清单
+### 9.6 验证清单
 
 - [ ] Actions 页面能看到这个 workflow
 - [ ] 手动跑一次，**Apply overrides** 这个 step 显示跳过（绿色）而不是报错
@@ -852,9 +560,9 @@ steps:
 
 ---
 
-## 11. 常见问题（通用）
+## 10. 常见问题（通用）
 
-### 11.1 我在 GitHub 上配了变量，但脚本没读到
+### 10.1 我在 GitHub 上配了变量，但脚本没读到
 
 按顺序排查：
 
@@ -862,9 +570,9 @@ steps:
 2. **放对地方了吗** —— 是建在对应的 Environment 下，还是建成了仓库级？
 3. **workflow 里有没有那行 `env:` 桥接** —— 脚本只认进程环境变量，GitHub 的 Variables 必须靠 `env:` 那一行映射进来，漏了就是空的
 4. **前缀写错了吗** —— 该用 `vars.` 却写了 `secrets.`（或反过来），GitHub **不报错**，只会给空字符串
-5. **打开 `DEBUG_MODE` 重跑**，看自检表的 `EMPTY` / `LENGTH` 列（见 8.3）
+5. **打开 `DEBUG_MODE` 重跑**，看自检表的 `EMPTY` / `LENGTH` 列（见第 8 节）
 
-### 11.2 任务失败但 workflow 显示绿色
+### 10.2 任务失败但 workflow 显示绿色
 
 **这是本仓库的已知设计行为。**
 
@@ -882,9 +590,9 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 > 例外：`oracle-abc` 对**任何未预期异常**都会 `sys.exit(1)`，所以「配置错 / 认证失败 / 调用异常」是会变红的，
 > 只有「没抢到容量」才是绿色。
 
-### 11.3 怎么确认配置真的生效了
+### 10.3 怎么确认配置真的生效了
 
-**方法一**：打开调试开关（`DEBUG_MODE=true`）重跑，看 `Check secrets` 输出的表格（见 8.3）
+**方法一**：打开调试开关（`DEBUG_MODE=true`）重跑，看 `Check secrets` 输出的表格（见第 8 节）
 
 **方法二**：看脚本自己的启动日志。好的脚本会把最终生效值打出来，比如：
 
@@ -896,13 +604,13 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 
 只打域名这类非敏感信息，**不打凭据**。
 
-### 11.4 Summary 页是空的
+### 10.4 Summary 页是空的
 
 1. `Run` 这个 step 是否真的产生了输出？（点进日志看）
 2. `Job Summary` 这个 step 有没有 `if: always()`？（漏了的话 `Run` 失败时摘要不会写）
 3. 本地跑时没有 `GITHUB_STEP_SUMMARY` 环境变量，摘要会自动跳过 —— 这是正常的
 
-### 11.5 外部调度器一直没触发
+### 10.5 外部调度器一直没触发
 
 1. 在调度器里点 **Test run**，看返回的 HTTP 状态码
 2. `401` / `403` → PAT 无效、过期，或权限不够（需要 `Actions: Read and write`）
@@ -910,7 +618,7 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 4. `422` → 请求体格式不对，或者项目 workflow 没声明对应的 `inputs`
 5. 都是 `200` / `204` 但 Actions 没新运行 → 去仓库的 **Settings → Actions → General** 检查有没有被限制
 
-### 11.6 不小心把机密提交进仓库了
+### 10.6 不小心把机密提交进仓库了
 
 1. **第一件事：立刻去对应的服务改密码 / 重新生成 token** —— 撤销泄露的那个凭据
 2. 再去处理 git 历史（`git filter-repo`、BFG 等）
@@ -918,9 +626,9 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 
 ---
 
-## 12. 文件速查
+## 11. 文件速查
 
-### 12.1 通用层 `common/`
+### 11.1 通用层 `common/`
 
 | 文件 | 作用 | 什么时候跑 |
 |---|---|---|
@@ -930,21 +638,21 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 | `execute.sh` | 按入口扩展名执行脚本，输出 `tee` 到 `output.log` | 每个项目都跑 |
 | `render-summary.sh` | 把 `output.log` 渲染成 Job Summary | 每个项目都跑（建议 `if: always()`） |
 
-### 12.2 workflow
+### 11.2 workflow
 
 | 文件 | 作用 |
 |---|---|
 | `run-project.yml` | 总入口，按 `project` 参数派发到具体项目（同时也是 `overrides` 的转发者） |
 | `<项目名>.yml` | 项目 workflow，只做「声明」：配置 + 调用 `common/*.sh` |
 
-### 12.3 各项目
+### 11.3 各项目
 
 | 项目 | 说明文档 |
 |---|---|
 | `glados_checkin` | [python/glados_checkin/README.md](python/glados_checkin/README.md) |
 | `oracle-abc` | [python/oracle-abc/README.md](python/oracle-abc/README.md) |
 
-### 12.4 其他
+### 11.4 其他
 
 | 文件 | 作用 |
 |---|---|
