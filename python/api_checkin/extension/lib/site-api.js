@@ -140,3 +140,15 @@ async function readCookies(site) {
     return { ok: false, cookies: [], error: e.message };
   }
 }
+/** new-api v1.x 自举：POST /api/user/auth/refresh —— 与站点前端同一逻辑，
+    浏览器自动带上 httpOnly 的刷新 cookie，返回 { access_token, user, session }。
+    v0.x 站没有这个端点，任何失败都静默返回 null。 */
+async function bootstrapV1Auth(site) {
+  try {
+    const data = await callApi(site + "/api/user/auth/refresh", { method: "POST", credentials: "include" });
+    const d = data && data.data;
+    return d && d.user && d.user.id ? d : null;
+  } catch (e) {
+    return null;
+  }
+}
