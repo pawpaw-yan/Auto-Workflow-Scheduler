@@ -788,21 +788,40 @@
   }
 
   /**
-   * 用令牌单独发一次请求验证可用性：credentials='omit' 不带会话 cookie，
-   * 免得被浏览器会话「救活」造成假阳性。
-   * 返回**空串** = 可用；否则返回失败原因（直接显示给用户，方便排查）。
+   * 用令牌**单独发一次真实请求**验证可用性。
+   *
+   * 验的不是「令牌能不能读出来」，而是「拿着它去调 /api/user/self 会不会被接受」——
+   * 这正是 api_checkin 跑起来时调的第一个接口，所以过了就说明签到也能过。
+   *
+   * credentials:'omit' 不带会话 cookie，免得被浏览器会话「救活」造成假阳性。
+   * 返回 { ok, detail }，detail 写清这次到底发了什么请求、结果如何，直接显示给用户 ——
+   * 免得看到「来源」两个字误以为验证走的是取令牌那个接口。
    */
   async function verifyToken(key, userId) {
-    if (looksMasked(key)) return "这是接口给的掩码（含 *），不是完整令牌";
+    const how = "发请求 GET /api/user/self（仅 Authorization: Bearer <令牌>，不带 cookie）";
+
+    if (looksMasked(key)) {
+      return { ok: false, detail: "没发请求：值是掩码（含 *），不是完整令牌" };
+    }
+
     try {
       const data = await api("/api/user/self", {
         omitCookie: true,
         headers: { Authorization: "Bearer " + key, "New-Api-User": String(userId) },
       });
-      if (data && data.success === true) return "";
-      return "接口返回 success=false：" + JSON.stringify(data).slice(0, 140);
+      if (data && data.success === true) {
+        // 把返回里的账号也带上：能证明「真的调通了，而且就是我这个号」，不只是布尔值
+        const who = (data.data && (data.data.username || data.data.display_name)) || "";
+        const id = (data.data && data.data.id) || "";
+        return {
+          ok: true,
+          detail: how + " → HTTP 200、success=true"
+            + (who ? "，返回账号 " + who + (id ? "（#" + id + "）" : "") : ""),
+        };
+      }
+      return { ok: false, detail: how + " → success=false：" + JSON.stringify(data).slice(0, 140) };
     } catch (e) {
-      return e.message;
+      return { ok: false, detail: how + " → " + e.message };
     }
   }
 
@@ -885,28 +904,32 @@
       const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
       const userId = (state && state.me) ? state.me.id : currentUserId;
 
-      /** 认下这个令牌：填进框、清掉「手填」标记、记住来源 */
-      function accept(value, source) {
+      /**
+       * 认下这个令牌：填进框、清掉「手填」标记、记住来源。
+       * detail 是验证时**实际发出的那次请求**的结果 —— 单独标出来，别和「来源」混在一起。
+       */
+      function accept(value, source, detail) {
         accessTokenField.value = value;
         delete accessTokenField.dataset.acsManual;
         if (state) {
           state.accessToken = value;
           state.accessTokenSource = source;
         }
-        setVerify("✅ 系统访问令牌已验证可用（来源：" + source + "）");
+        setVerify("✅ 验证通过 · " + detail + " · 令牌来源：" + source);
       }
 
       refreshValues();
 
-      // ① 已经拿到值了（老版本的字段名，或人手填的）→ 直接验
+      // ① 已经拿到值了（老版本的字段名，或人手填的）→ 直接发请求验
       if (accessTokenField.value.trim()) {
         const key = accessTokenField.value.trim();
         const source = (state && state.accessTokenSource) || (accessTokenField.dataset.acsManual ? "手工填写" : "已读到");
-        setVerify("正在验证系统访问令牌…");
-        const reason = await verifyToken(key, userId);
-        if (!reason) setVerify("✅ 系统访问令牌已验证可用（来源：" + source + "）");
-        else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过：" + reason);
-        else setVerify("⚠️ 系统访问令牌验证没通过：" + reason);
+        setVerify("正在发请求验证令牌…");
+
+        const result = await verifyToken(key, userId);
+        if (result.ok) setVerify("✅ 验证通过 · " + result.detail + " · 令牌来源：" + source);
+        else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过 · " + result.detail);
+        else setVerify("⚠️ 验证没通过 · " + result.detail);
         return;
       }
 
@@ -915,12 +938,13 @@
       // ② 老版本可能有别的字段名：把 user 对象里所有 token 字段逐个**真发请求**去挑
       if (state.tokenCandidates.length) {
         const names = state.tokenCandidates.map((item) => "`" + item.key + "`").join("、");
-        setVerify("在 " + names + " 里找可用的访问令牌…");
+        setVerify("在 " + names + " 里找可用的访问令牌（每个都真发一次请求）…");
 
         for (let i = 0; i < state.tokenCandidates.length; i++) {
           const candidate = state.tokenCandidates[i];
-          if (await verifyToken(candidate.value, userId)) continue;   // 非空 = 没通过，试下一个
-          accept(candidate.value, "字段 `" + candidate.key + "`");
+          const result = await verifyToken(candidate.value, userId);
+          if (!result.ok) continue;   // 没通过就试下一个
+          accept(candidate.value, "字段 `" + candidate.key + "`", result.detail);
           return;
         }
         // 没通过也不急着退出，继续走 ③ 试新接口
@@ -928,7 +952,8 @@
 
       // ③ 最后才用站点前端自己那个接口：GET /api/user/token
       //    （站点「访问令牌」弹窗就是靠它拿的，是「有就返回原来的、没有才生成」，当读取用安全）
-      setVerify("字段里都没找到，改用站点自己的接口 GET /api/user/token…");
+      //    注意：它只负责**取**令牌，验证仍然是拿令牌去调 /api/user/self。
+      setVerify("字段里都没找到，改用站点自己的接口取令牌：GET /api/user/token…");
       try {
         const payload = (await api("/api/user/token")).data;
         const fresh = typeof payload === "string"
@@ -936,14 +961,14 @@
           : ((payload && (payload.access_token || payload.token)) || "");
 
         if (fresh) {
-          const reason = await verifyToken(String(fresh), userId);
-          if (!reason) { accept(String(fresh), "GET /api/user/token"); return; }
-          setVerify("⚠️ GET /api/user/token 返回了值，但验证没通过：" + reason);
+          const result = await verifyToken(String(fresh), userId);
+          if (result.ok) { accept(String(fresh), "GET /api/user/token", result.detail); return; }
+          setVerify("⚠️ 从 GET /api/user/token 取到了值，但验证没通过 · " + result.detail);
           return;
         }
         setVerify("⚠️ GET /api/user/token 没返回令牌 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框");
       } catch (e) {
-        setVerify("⚠️ 读 /api/user/token 失败：" + e.message
+        setVerify("⚠️ 取令牌失败（GET /api/user/token）：" + e.message
           + " —— 去站点「个人设置 → 安全设置」复制后粘进下面的框");
       }
     }
