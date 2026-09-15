@@ -101,6 +101,8 @@ ENV_TIMEOUT = "API_TIMEOUT"
 
 SELF_PATH = "/api/user/self"
 CHECKIN_PATH = "/api/user/checkin"
+# 部分定制 fork（如「福利站」类）把签到挪出了 /api/user 前缀 —— 404 时按序回退
+CHECKIN_FALLBACK_PATHS = ("/api/checkin",)
 
 AUTH_COOKIE = "cookie"
 AUTH_TOKEN = "token"
@@ -600,7 +602,8 @@ class SiteClient:
         self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update(self._build_headers())
-        self._v1_tried = False   # v1.x auth/refresh 自举每账号只试一次
+        self._v1_tried = False      # v1.x auth/refresh 自举每账号只试一次
+        self._checkin_path = None   # 探测成功的签到路径（跨请求复用）
         # Cookie 放进会话的 cookie 罐而不是 Cookie 头：requests 在罐里有 cookie 时
         # 会用罐里的内容整个覆盖 Cookie 头 —— 下面过 WAF 挑战要往罐里种
         # acw_sc__v2，静态会话要是还在头里就会被这一下冲掉。
@@ -754,11 +757,24 @@ class SiteClient:
         return _unwrap(body)
 
     def checkin(self) -> Tuple[bool, str, object]:
-        """执行签到，返回 (是否成功, 服务端消息, 原始 data)"""
-        body = self.request("POST", CHECKIN_PATH)
-        success = bool(body.get("success"))
-        message = str(body.get("message") or "")
-        return success, message, body.get("data")
+        """执行签到，返回 (是否成功, 服务端消息, 原始 data)。
+        标准 new-api 是 /api/user/checkin；部分定制 fork 把它挪到了 /api/checkin ——
+        404 时自动回退，成功的路径记在会话里避免重复试错。"""
+        paths = [self._checkin_path] if self._checkin_path else [CHECKIN_PATH, *CHECKIN_FALLBACK_PATHS]
+        last_error: Optional[RequestError] = None
+        for path in paths:
+            try:
+                body = self.request("POST", path)
+            except RequestError as exc:
+                if "HTTP 404" in str(exc):
+                    last_error = exc
+                    continue
+                raise   # 401 认证 / 5xx 等真实问题不回退，直接上抛
+            self._checkin_path = path
+            success = bool(body.get("success"))
+            message = str(body.get("message") or "")
+            return success, message, body.get("data")
+        raise last_error or RequestError("所有签到路径都返回 404")
 
 
 def _unwrap(body: dict) -> dict:
