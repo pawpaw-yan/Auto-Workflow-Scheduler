@@ -42,12 +42,20 @@ function switchTab(name) {
   if (name === "sites" && typeof refreshStoredInfo === "function") refreshStoredInfo();
 }
 
+/** GitHub 不是 API 站：面板会在派发页上呼出，别把它的 origin 当站点（否则会去读 GitHub 的 cookie） */
+function isGithubHost(site) {
+  try { return /(^|\.)github\.com$/i.test(new URL(site).hostname); }
+  catch (e) { return false; }
+}
+
 /** 默认站点取当前活动标签页的 origin（在站点页上点扩展 → 不用手填） */
 async function initDefaultSite() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.url && /^https?:/i.test(tab.url)) {
-      byId("siteInput").value = new URL(tab.url).origin;
+      const origin = new URL(tab.url).origin;
+      if (isGithubHost(origin)) return;   // 留空，等用户自己填
+      byId("siteInput").value = origin;
     }
   } catch (e) { /* 当前页不是 http(s)，让用户自己填 */ }
 }
@@ -71,4 +79,6 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-byId("coreVersion").textContent = "扩展 v1.3.7";
+// 版本号直接读 manifest，免得每次发版都漏改这里
+try { byId("coreVersion").textContent = "扩展 v" + chrome.runtime.getManifest().version; }
+catch (e) { byId("coreVersion").textContent = ""; }

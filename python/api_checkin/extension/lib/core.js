@@ -153,8 +153,8 @@ function render(sites, format, ref) {
 }
 
 /** 令牌值是不是「掩码」（形如 sk-abc1********WXYZ）。列表接口可能只给掩码，那种值必然 401 */
-function looksMasked(key) {
-  return String(key || "").indexOf("*") !== -1;
+function looksMasked(value) {
+  return String(value || "").indexOf("*") !== -1;
 }
 
 /** 把 user 对象里所有「名字带 token 的字符串字段」捞出来当候选（字段名各版本不一，不猜） */
@@ -173,13 +173,13 @@ function tokenCandidates(user) {
   return found;
 }
 
-  /** 统计 {站点: {桶: [...]}} 里的账号总数 */
-  function countAccounts(sites) {
-    let count = 0;
-    Object.keys(sites || {}).forEach((site) => {
-      Object.keys(sites[site] || {}).forEach((bucket) => {
-        count += (sites[site][bucket] || []).length;
-      });
+/** 统计 {站点: {桶: [...]}} 里的账号总数 */
+function countAccounts(sites) {
+  let count = 0;
+  Object.keys(sites || {}).forEach((site) => {
+    Object.keys(sites[site] || {}).forEach((bucket) => {
+      count += (sites[site][bucket] || []).length;
     });
-    return count;
-  }
+  });
+  return count;
+}

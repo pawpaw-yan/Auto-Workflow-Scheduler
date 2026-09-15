@@ -14,6 +14,10 @@ async function loadSite() {
     setStatus("extractError", "站点地址要以 http:// 或 https:// 开头", true);
     return;
   }
+  if (isGithubHost(site)) {
+    setStatus("extractError", "这是 GitHub，不是 API 站点 —— 填你的 new-api / one-api 站点地址", true);
+    return;
+  }
   byId("loadBtn").disabled = true;
   setStatus("extractError", "正在读取（cookie / 用户 ID / 会话 / 令牌）…");
   try {
@@ -79,5 +83,6 @@ byId("cookieField").addEventListener("change", () => {
 
 // Open panel: auto-read the current site (status line explains when the user id is unreadable)
 initDefaultSite().then(() => {
-  if (/^https?:\/\//.test(byId("siteInput").value.trim())) loadSite();
+  const site = byId("siteInput").value.trim();
+  if (/^https?:\/\//.test(site) && !isGithubHost(site)) loadSite();
 });

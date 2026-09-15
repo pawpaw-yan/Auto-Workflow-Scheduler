@@ -19,6 +19,11 @@ function injectedFill(value) {
 }
 
 async function fillGithubTabs() {
+  // 只有「SITES 值」能填进 GitHub 的输入框 —— 选了 gh 命令 / HTTP body 就先切回来再填
+  if (byId("formatSelect").value !== "sites") {
+    byId("formatSelect").value = "sites";
+    await updateSitesPanel();
+  }
   const value = byId("preview").value;
   if (!value) { setStatus("fillResult", "没有可填的内容", true); return; }
 
