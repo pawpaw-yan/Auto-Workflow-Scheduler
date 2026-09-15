@@ -1,4 +1,4 @@
-﻿/* panel-sites-fill.js —— 跨标签页：把 SITES 填进已打开的 GitHub 派发页 */
+/* panel-sites-fill.js —— 跨标签页：把 SITES 填进已打开的 GitHub 派发页 */
 
 "use strict";
 

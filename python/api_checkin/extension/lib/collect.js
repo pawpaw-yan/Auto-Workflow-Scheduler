@@ -1,4 +1,4 @@
-﻿/* collect.js —— 提取一个站点的全部要素：cookie（含 httpOnly）→ 用户 ID → 会话 → 访问令牌。
+/* collect.js —— 提取一个站点的全部要素：cookie（含 httpOnly）→ 用户 ID → 会话 → 访问令牌。
    每一步的失败都记进 errors，绝不因为一步失败丢掉已拿到的值。 */
 
 "use strict";

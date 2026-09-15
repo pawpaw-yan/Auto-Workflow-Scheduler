@@ -5,8 +5,8 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header>
-    <h1>🛠 账号小助手</h1>
+  <header class="topbar">
+    <div class="brand">🛠 账号小助手</div>
     <nav class="tabs">
       <button data-tab="extract" class="tab active" type="button">提取账号</button>
       <button data-tab="sites" class="tab" type="button">SITES JSON</button>
@@ -20,9 +20,9 @@
       <input id="siteInput" type="text" spellcheck="false" placeholder="https://your-site.com">
       <button id="loadBtn" class="primary" type="button">读取</button>
     </div>
-
-    <div id="info" class="kv"></div>
     <div id="extractError" class="status"></div>
+
+    <div id="info"></div>
 
     <div class="row">
       <label>用户 ID</label>
@@ -50,36 +50,43 @@
     <div class="row">
       <button id="testTokenBtn" type="button">🔍 测试访问令牌</button>
       <button id="testCookieBtn" type="button">🔍 测试 Cookie</button>
-      <button id="toSitesBtn" class="primary" type="button">→ 填进 SITES JSON</button>
+      <button id="toSitesBtn" class="primary" type="button">＋ 填进 SITES（追加）</button>
     </div>
     <div id="testResult" class="status"></div>
   </section>
 
   <!-- ② SITES JSON -->
   <section id="panel-sites" hidden>
-    <div class="row title"><b>行格式账号表</b></div>
-    <textarea id="linesInput" rows="6" spellcheck="false"></textarea>
-    <p class="hint">每行 4 段；空行与 # 开头的行会跳过；凭证放最后一段，凭证里带 | 也不会被切断。</p>
-
-    <div class="row">
-      <label>输出形式</label>
-      <select id="formatSelect"></select>
-      <label id="refLabel" hidden>ref</label>
-      <input id="refInput" type="text" value="main" spellcheck="false" hidden>
+    <div class="row title">
+      <b>已填入 <span id="storedCount"></span></b>
+      <button id="clearStoredBtn" class="small" type="button">清空</button>
     </div>
-    <p id="formatHint" class="hint"></p>
+    <div id="storedList"></div>
 
+    <div class="row title"><b>追加账号（行格式）</b></div>
+    <textarea id="linesInput" rows="4" spellcheck="false" placeholder="https://site.com|标签|token=42|sk-xxx"></textarea>
+    <p class="hint">每行 4 段；空行与 # 开头的行跳过；凭证放最后一段，凭证里带 | 也不会被切断。追加时按凭证去重。</p>
     <div class="row">
-      <label>写入方式</label>
-      <label class="radio"><input type="radio" name="writeMode" value="replace" checked> 替换</label>
-      <label class="radio"><input type="radio" name="writeMode" value="append"> 追加到已存</label>
-      <button id="clearStoredBtn" type="button">清空已存</button>
+      <button id="appendBtn" class="primary" type="button">＋ 追加到已填入</button>
     </div>
-    <div id="storedInfo" class="hint"></div>
+    <div id="appendResult" class="status"></div>
 
     <div class="row title"><b>生成结果</b></div>
-    <textarea id="preview" rows="6" readonly spellcheck="false" placeholder="左边一旦有内容，这里实时显示"></textarea>
-
+    <div class="row">
+      <label>来源</label>
+      <select id="sourceSelect">
+        <option value="stored">已填入栏目</option>
+        <option value="lines">上面的行格式</option>
+      </select>
+      <label>形式</label>
+      <select id="formatSelect"></select>
+    </div>
+    <div class="row" id="refRow" hidden>
+      <label>ref</label>
+      <input id="refInput" type="text" value="main" spellcheck="false">
+    </div>
+    <p id="formatHint" class="hint"></p>
+    <textarea id="preview" rows="6" readonly spellcheck="false" placeholder="选择来源后这里实时生成"></textarea>
     <div class="row">
       <button id="copyBtn" class="primary" type="button" disabled>复制</button>
       <button id="fillGithubBtn" type="button" disabled>→ 跨标签页填进 GitHub</button>
@@ -88,7 +95,7 @@
   </section>
 
   <footer>
-    全部在本机浏览器里完成，不会发往任何第三方。
+    <span>全部在本机浏览器里完成，不会发往任何第三方。</span>
     <span id="coreVersion"></span>
   </footer>
 

@@ -1,4 +1,4 @@
-﻿/* content.css —— 页面内注入的按钮 / 菜单 / 面板。类名全部带 acsx- 前缀，不碰宿主页面 */
+/* content.css —— 页面内注入的按钮 / 菜单 / 面板。类名全部带 acsx- 前缀，不碰宿主页面 */
 
 .acsx-launcher {
   position: fixed; top: 16px; right: 16px; z-index: 2147483000;
@@ -36,7 +36,7 @@
 .acsx-panel {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   z-index: 2147482999;
-  width: min(440px, calc(100vw - 24px));
+  width: min(422px, calc(100vw - 24px));
   background: rgba(255, 255, 255, .92);
   -webkit-backdrop-filter: blur(20px) saturate(170%);
   backdrop-filter: blur(20px) saturate(170%);

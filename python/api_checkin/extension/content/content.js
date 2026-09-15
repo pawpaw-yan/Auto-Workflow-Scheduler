@@ -1,4 +1,4 @@
-﻿/* content.js —— 往页面里注入「账号小助手」：可拖动的呼出按钮 + 二级菜单 + 弹出面板。
+/* content.js —— 往页面里注入「账号小助手」：可拖动的呼出按钮 + 二级菜单 + 弹出面板。
    面板本体是扩展自己的 popup.html（web_accessible_resources 允许内嵌）——
    扩展页面即使在 iframe 里也拥有 chrome.cookies / chrome.tabs 等完整权限，
    所以提取 / 验证 / 跨标签页填写的逻辑一行都不用为页面上下文重写。 */
@@ -62,6 +62,7 @@
     btn.style.left = x + "px";
     btn.style.top = y + "px";
     btn.style.right = "auto";
+    if (menu) placeMenu();   // 菜单开着时跟着按钮走
   });
 
   btn.addEventListener("pointerup", () => {
@@ -80,7 +81,17 @@
 
   document.documentElement.appendChild(btn);
 
-  /* ── 二级菜单 ── */
+  /* ── 二级菜单（跟随按钮位置，拖动时同步） ── */
+  function placeMenu() {
+    if (!menu) return;
+    const rect = btn.getBoundingClientRect();
+    let left = rect.right - menu.offsetWidth;
+    if (left < 8) left = 8;
+    menu.style.left = left + "px";
+    const top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 8);
+    menu.style.top = Math.max(8, top) + "px";
+  }
+
   function closeMenu() {
     if (menu) { menu.remove(); menu = null; }
   }
@@ -102,12 +113,7 @@
     });
 
     document.documentElement.appendChild(menu);
-    const rect = btn.getBoundingClientRect();
-    let left = rect.right - menu.offsetWidth;
-    if (left < 8) left = 8;
-    menu.style.left = left + "px";
-    const top = Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 8);
-    menu.style.top = Math.max(8, top) + "px";
+    placeMenu();
   }
 
   /* ── 面板：居中卡片 + 遮罩，内容是扩展自己的 popup.html ── */

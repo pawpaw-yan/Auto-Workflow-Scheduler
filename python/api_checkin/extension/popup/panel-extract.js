@@ -1,4 +1,4 @@
-﻿/* panel-extract.js —— 「提取账号」面板：读站点 → 展示。测试与写入在 extract-actions.js */
+/* panel-extract.js —— 「提取账号」面板：读站点 → 展示。测试与写入在 extract-actions.js */
 
 "use strict";
 
@@ -36,7 +36,7 @@ function renderExtractInfo() {
     ["会话", state.sessionValid ? "有效" : "无效（没登录或被 WAF 拦）"],
     ["Cookie 数", String(state.cookieCount || 0)],
     ["访问令牌", state.accessToken
-      ? (state.accessTokenSource + (state.testLoose ? "（严格模式被 WAF 拦，带 cookie 才过）" : "（严格模式验证通过）"))
+      ? (state.accessTokenSource + "（已验证可用）")
       : (state.accessTokenNote || "（未取到）")],
   ];
 
@@ -59,9 +59,7 @@ function renderExtractInfo() {
 
   // 读取时已经验证过的令牌，结果一并显示
   if (state.testDetail) {
-    setStatus("testResult", state.testLoose
-      ? "访问令牌：严格模式被 WAF 拦，带浏览器 cookie 才通过（点「测试访问令牌」可复验）"
-      : "访问令牌：严格模式验证通过 —— 真能用");
+    setStatus("testResult", "访问令牌：验证通过 —— 真能用");
   }
 }
 
@@ -74,4 +72,9 @@ byId("tokenField").addEventListener("change", () => {
 });
 byId("cookieField").addEventListener("change", () => {
   if (extractState) extractState.cookie = byId("cookieField").value.trim();
+});
+
+// 打开面板就自动读当前站点 —— 不用手动点「读取」（读不到会在状态行说明原因）
+initDefaultSite().then(() => {
+  if (/^https?:\/\//.test(byId("siteInput").value.trim())) loadSite();
 });

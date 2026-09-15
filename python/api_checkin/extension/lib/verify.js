@@ -1,5 +1,4 @@
-﻿/* verify.js —— 两级令牌验证：先严格（不带 cookie），被 WAF 拦下才带 cookie 重试。
-   严格模式过了才算「真能用」；带 cookie 才过的只算 🟡（浏览器语境可用）。 */
+/* verify.js —— 令牌验证：严格一次（不带任何会话 cookie）。没过就是无效或被 WAF 拦截。 */
 
 "use strict";
 
@@ -25,18 +24,7 @@ async function verifyToken(token, userId, site, credentials) {
   return detail;
 }
 
-/**
- * 两级验证。第一级严格（omit）；失败且响应像被 WAF 拦（403/405 或非 JSON）时，
- * 第二级带 cookie 重试。返回 { ok, loose, detail }。
- */
+/** 严格验证一次：不带任何会话 cookie。没过就是没过（无效或被 WAF 拦截），不做带 cookie 的重试。 */
 async function tryVerify(token, userId, site) {
-  const strict = await verifyToken(token, userId, site, "omit");
-  if (strict.ok) return { ok: true, loose: false, detail: strict };
-
-  const wafLike = /HTTP 40[35]|挑战页/.test(strict.message);
-  if (!wafLike) return { ok: false, loose: false, detail: strict };
-
-  const loose = await verifyToken(token, userId, site, "include");
-  if (loose.ok) return { ok: true, loose: true, detail: loose };
-  return { ok: false, loose: true, detail: loose };
+  return verifyToken(token, userId, site, "omit");
 }

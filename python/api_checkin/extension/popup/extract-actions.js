@@ -1,4 +1,4 @@
-﻿/* extract-actions.js —— 「提取账号」面板的按钮动作：测试令牌 / 测试 Cookie / 写入 SITES */
+/* extract-actions.js —— 「提取账号」面板的按钮动作：测试令牌 / 测试 Cookie / 写入 SITES */
 
 "use strict";
 
@@ -11,11 +11,9 @@ async function runTokenTest() {
   setStatus("testResult", "正在验证令牌（严格模式，不带浏览器 cookie）…");
   const result = await tryVerify(token, userId, site);
   if (result.ok) {
-    setStatus("testResult", result.loose
-      ? "🟡 令牌可用，但严格模式被 WAF 拦 —— 是带浏览器 cookie 才通过的"
-      : "✅ 令牌有效（严格模式通过，不带任何会话也能用）");
+    setStatus("testResult", "✅ 令牌有效");
   } else {
-    setStatus("testResult", "❌ 令牌无效：" + result.detail.message, true);
+    setStatus("testResult", "❌ 令牌没过（无效或被 WAF 拦截）：" + result.detail.message, true);
   }
 }
 
@@ -60,10 +58,8 @@ async function toSites() {
     setStatus("testResult", parsed.errors.join("；"), true);
     return;
   }
-  const sites = buildSites(parsed.accounts);
-  const mode = document.querySelector('input[name="writeMode"]:checked').value;
-  await setStoredSites(mode === "append" ? mergeSites(await getStoredSites(), sites) : sites);
-  setStatus("testResult", "✅ 已写入（" + mode + " 模式，本次 " + countAccounts(sites) + " 个账号）—— 切到「SITES JSON」标签复制或跨标签页填写");
+  const res = await appendAccounts(parsed.accounts);
+  setStatus("testResult", "✅ 已追加进 SITES（本次 " + res.added + " 条" + (res.dup ? "，跳过重复 " + res.dup + " 条" : "") + "，共 " + res.total + " 条）—— 切到「SITES JSON」查看或生成");
 }
 
 byId("testTokenBtn").addEventListener("click", runTokenTest);
