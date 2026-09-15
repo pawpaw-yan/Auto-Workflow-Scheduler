@@ -881,6 +881,8 @@
       if (state.errors.length) {
         state.errors.forEach((message2) => info.appendChild(el("div", { text: "⚠️ " + message2 })));
       }
+      const fieldsCell = body.querySelector("[data-acs-userfields]");
+      if (fieldsCell) fieldsCell.textContent = state.userFields.join(", ") || "（没拿到字段名）";
     }
 
     async function load() {
@@ -1013,6 +1015,12 @@
       el("summary", { text: "API 密钥（sk- 开头，调用模型用 —— api_checkin 用不上）" }),
       el("div", { class: "acs-row", style: "margin-top:8px" }, [tokenSelect, createBtn, deleteBtn]),
       el("p", { class: "acs-hint", text: "这一组走 /api/token/，就是站点「密钥管理」页里的东西；有的版本只返回掩码（含 *），拿不到明文。" }),
+    ]));
+
+    body.appendChild(el("details", { style: "margin-top:10px" }, [
+      el("summary", { text: "诊断：/api/user/self 返回的字段名" }),
+      el("p", { class: "acs-hint", text: "「访问令牌」为空时把下面这行发我 —— 可能这个版本的字段名不叫 access_token。" }),
+      el("p", { class: "acs-hint" }, [el("code", { "data-acs-userfields": "1", text: "（读取后填上）" })]),
     ]));
 
     body.appendChild(el("p", { class: "acs-hint", text: "要把它们变成行格式 / SITES JSON：用菜单里的「SITES JSON」粘一遍（GitHub 派发页也有同一个按钮）。" }));
