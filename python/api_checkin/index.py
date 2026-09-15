@@ -59,10 +59,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -593,6 +595,37 @@ def acw_challenge_arg1(body: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+# ─────────────────────── 独立签到系统的 PoW 求解 ───────────────────────
+# 某些公益站用独立的「签到系统」（Linux Do OAuth + PoW/验证码防滥用），
+# 其 checkin-pow.js 的算法：sha256(payload + ":" + counter) 的十六进制摘要
+# 前导零比特数 ≥ difficulty 即为解。这里逐位复刻。
+
+def _leading_zero_bits(hex_digest: str) -> int:
+    zero = 0
+    for ch in hex_digest:
+        nib = int(ch, 16)
+        if nib == 0:
+            zero += 4
+            continue
+        for shift in (3, 2, 1, 0):
+            if (nib >> shift) & 1:
+                return zero
+            zero += 1
+    return zero
+
+
+def solve_checkin_pow(payload: str, difficulty: int, expires_at: float = 0) -> Tuple[int, str]:
+    prefix = payload + ":"
+    counter = 0
+    while True:
+        digest = hashlib.sha256(f"{prefix}{counter}".encode()).hexdigest()
+        if _leading_zero_bits(digest) >= difficulty:
+            return counter, digest
+        counter += 1
+        if expires_at and counter % 200_000 == 0 and time.time() >= expires_at:
+            raise RequestError("PoW 挑战已过期，请重跑一次")
+
+
 class SiteClient:
     """一个账号的 HTTP 会话。请求头按认证方式拼装。"""
 
@@ -604,6 +637,7 @@ class SiteClient:
         self.session.headers.update(self._build_headers())
         self._v1_tried = False      # v1.x auth/refresh 自举每账号只试一次
         self._checkin_path = None   # 探测成功的签到路径（跨请求复用）
+        self._mode = None           # None = 标准 new-api；"checkin-system" = 独立签到系统
         # Cookie 放进会话的 cookie 罐而不是 Cookie 头：requests 在罐里有 cookie 时
         # 会用罐里的内容整个覆盖 Cookie 头 —— 下面过 WAF 挑战要往罐里种
         # acw_sc__v2，静态会话要是还在头里就会被这一下冲掉。
@@ -644,13 +678,13 @@ class SiteClient:
     def _log(self, emoji: str, message: str, force: bool = False) -> None:
         logger.info(f"{LogEmoji.SITE}[{self.account.site}] {emoji} {message}")
 
-    def _send(self, method: str, url: str):
+    def _send(self, method: str, url: str, body: Optional[str] = None):
         try:
-            return self.session.request(method, url, timeout=self.timeout)
+            return self.session.request(method, url, timeout=self.timeout, data=body)
         except requests.exceptions.RequestException as exc:
             raise RequestError(f"网络错误：{exc}") from exc
 
-    def _solve_waf(self, method: str, url: str, response):
+    def _solve_waf(self, method: str, url: str, response, body: Optional[str] = None):
         """命中阿里云 WAF 的 JS 挑战时自己算 acw_sc__v2、种进罐再重试。
         最多解两轮 —— 个别部署会连着出两道；解不动就原样返回、落到正常报错。"""
         for _ in range(2):
@@ -660,7 +694,7 @@ class SiteClient:
             if self.verbose:
                 self._log(LogEmoji.STATUS, "命中 WAF 挑战页，已解出 acw_sc__v2，重试")
             self.session.cookies.set(ACW_COOKIE, acw_sc__v2_of(arg1))
-            response = self._send(method, url)
+            response = self._send(method, url, body)
         return response
 
     def _try_v1_bootstrap(self) -> bool:
@@ -684,22 +718,22 @@ class SiteClient:
             self._log(LogEmoji.STATUS, "new-api v1.x：已用 auth/refresh 换取访问令牌")
         return True
 
-    def _retry_after_v1_bootstrap(self, method: str, url: str, response):
+    def _retry_after_v1_bootstrap(self, method: str, url: str, response, body: Optional[str] = None):
         """401 且是 cookie 账号时，先试一次 v1.x 自举再放弃（每个账号每轮只试一次）。"""
         if self.account.kind != AUTH_COOKIE or self._v1_tried:
             return response
         self._v1_tried = True
         if not self._try_v1_bootstrap():
             return response
-        return self._solve_waf(method, url, self._send(method, url))
+        return self._solve_waf(method, url, self._send(method, url, body), body)
 
-    def request(self, method: str, path: str) -> dict:
+    def request(self, method: str, path: str, body: Optional[str] = None) -> dict:
         """发一个请求并返回解析后的 JSON。失败一律抛异常，由上层归类。"""
         url = f"{self.account.site}{path}"
-        response = self._send(method, url)
-        response = self._solve_waf(method, url, response)
+        response = self._send(method, url, body)
+        response = self._solve_waf(method, url, response, body)
         if response.status_code == 401:
-            response = self._retry_after_v1_bootstrap(method, url, response)
+            response = self._retry_after_v1_bootstrap(method, url, response, body)
 
         body = (response.text or "").strip()
 
@@ -753,10 +787,84 @@ class SiteClient:
         )
 
     def get_self(self) -> dict:
-        body = self.request("GET", SELF_PATH)
+        try:
+            body = self.request("GET", SELF_PATH)
+        except RequestError as exc:
+            # 独立「签到系统」站没有 /api/user/self（SPA 兜底页，JSON 解析必失败）——
+            # /api/info 才是它们的状态口
+            if "响应不是 JSON" in str(exc) or "HTTP 404" in str(exc):
+                info = self._checkin_system_info()
+                if info is not None:
+                    return info
+            raise
         return _unwrap(body)
 
+    def _checkin_system_info(self) -> Optional[dict]:
+        """GET /api/info：独立签到系统的状态口。返回 None 表示不是这类站。"""
+        try:
+            info = self.request("GET", "/api/info")
+        except RequestError:
+            return None
+        if not isinstance(info, dict) or "logged_in" not in info:
+            return None
+        self._mode = "checkin-system"
+        if not info.get("logged_in"):
+            raise AuthError(
+                "未登录：该站是独立的签到系统（Linux Do OAuth），"
+                "请先在浏览器完成登录，再复制本站点域名下的 cookie",
+                "「方式二」复制 cookie 后重跑",
+            )
+        me = {
+            "id": info.get("user_id") or info.get("linux_do_id"),
+            "username": info.get("username"),
+            "quota": info.get("quota"),
+        }
+        return {k: v for k, v in me.items() if v is not None} or {"id": 0}
+
     def checkin(self) -> Tuple[bool, str, object]:
+        if self._mode == "checkin-system":
+            return self._checkin_system()
+        return self._checkin_standard()
+
+    def _checkin_system(self) -> Tuple[bool, str, object]:
+        """独立签到系统的签到：GET /api/info → （验证码启用则无法自动化）→
+        PoW 任务 → 本地求解 → POST /api/checkin 提交。
+        提交响应也是 info 形态（无 success 字段），以 logged_in / error 判定。"""
+        info = self.request("GET", "/api/info")
+        if not info.get("logged_in"):
+            raise AuthError(
+                "未登录：该站是独立的签到系统，请先在浏览器用 Linux Do 登录并复制本域名的 cookie"
+            )
+        captcha = info.get("captcha") or {}
+        if captcha.get("enabled"):
+            raise RequestError(
+                "该签到系统启用了验证码（%s），脚本无法自动签到，请手动完成" % (captcha.get("provider") or "captcha")
+            )
+        payload = signature = counter = digest = ""
+        pow_cfg = info.get("pow") or {}
+        if pow_cfg.get("enabled"):
+            task = self.request("POST", "/api/checkin/task", body=json.dumps({}))
+            if task.get("enabled"):
+                payload = str(task.get("payload") or "")
+                signature = str(task.get("signature") or "")
+                difficulty = int(task.get("difficulty") or 0)
+                expires_at = float(task.get("expires_at") or 0)
+                if self.verbose:
+                    self._log(LogEmoji.STATUS, f"正在解 PoW（难度：{difficulty} 位前导零）…")
+                counter, digest = solve_checkin_pow(payload, difficulty, expires_at)
+        body = self.request("POST", "/api/checkin", body=json.dumps({
+            "pow_payload": payload,
+            "pow_signature": signature,
+            "pow_counter": counter,
+            "pow_hash": digest,
+        }))
+        success = bool(body.get("logged_in")) and not body.get("error")
+        message = str(body.get("message") or body.get("error") or ("签到完成" if success else "签到未成功"))
+        if body.get("quota") is not None and success:
+            message += f"（余额 {body['quota']}）"
+        return success, message, body
+
+    def _checkin_standard(self) -> Tuple[bool, str, object]:
         """执行签到，返回 (是否成功, 服务端消息, 原始 data)。
         标准 new-api 是 /api/user/checkin；部分定制 fork 把它挪到了 /api/checkin ——
         404 时自动回退，成功的路径记在会话里避免重复试错。"""
