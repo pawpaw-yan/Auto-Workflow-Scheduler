@@ -82,7 +82,7 @@ https://another-site.org|dav|cookie|session=eyJhbGciOi...; new-api-session=abc12
 |---|---|
 | 站点地址 | 必须带 `http://` 或 `https://`；结尾的 `/` 可有可无 |
 | 账号标签 | 自己起的名字，只出现在日志和推送里，用来区分同一个站点的多个号 |
-| 认证类型 | `cookie` 或 `token`；写成 `token=<用户ID>` 会额外带上 `New-Api-User` 头 |
+| 认证类型 | `cookie` 或 `token`；写成 `cookie=<用户ID>` 或 `token=<用户ID>` 会额外带上 `New-Api-User` 头 |
 | 凭证 | cookie 或令牌本身。⚠️ **令牌不以 `sk-` 开头也完全正常** —— 类型段写了 `token` 就按令牌处理 |
 
 **凭证放最后一段是刻意的** —— 解析时对它只做一次 `split("|", 3)`，

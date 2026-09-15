@@ -37,13 +37,15 @@ async function runCookieTest() {
   }
 }
 
-/** 提取结果 → 一行账号（行格式）；parseLines 会原样走一遍校验 */
+/** 提取结果 → 一行账号（行格式）；parseLines 会原样走一遍校验。
+    cookie 也带 =用户ID：不少 new-api 站在 cookie 会话下同样强制要 New-Api-User 头。 */
 function buildLineFromState(state) {
   const label = (state.me && (state.me.username || state.me.display_name)) || "账号";
   if (state.accessToken) {
     return state.site + "|" + label + "|token=" + state.userId + "|" + state.accessToken;
   }
-  return state.site + "|" + label + "|cookie|" + state.cookie;
+  const kind = state.userId ? "cookie=" + state.userId : "cookie";
+  return state.site + "|" + label + "|" + kind + "|" + state.cookie;
 }
 
 /** 把提取结果写进 SITES 存储（替换 / 追加），切到 SITES 标签即可复制或跨标签页填写 */

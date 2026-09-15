@@ -114,7 +114,8 @@ SITES_FIELDS = 4
 SITES_FORMAT_HINT = (
     "每行格式：<站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>\n"
     "  例：https://api.example.com|主号|cookie|session=abc; new-api-session=def\n"
-    "  例：https://api.example.com|小号|token=42|sk-abcdefghijklmn"
+    "  例：https://api.example.com|小号|token=42|sk-abcdefghijklmn\n"
+    "  例：https://api.example.com|备用|cookie=42|session=abc   ← 要求 New-Api-User 头的站这样写"
 )
 
 # 判定「今天已经签过」用的关键词（各站文案不统一，尽量都覆盖）
@@ -664,8 +665,9 @@ class SiteClient:
         body = (response.text or "").strip()
 
         if response.status_code in (401, 403):
+            # 把服务端原文带上：new-api 系的 401 会说「未提供 New-Api-User」这类具体原因
             raise AuthError(
-                f"HTTP {response.status_code}",
+                f"HTTP {response.status_code}：{body[:120]}",
                 self._auth_hint(response.status_code),
             )
 
@@ -694,15 +696,22 @@ class SiteClient:
             if status_code in (401, 403)
             else ""
         )
-        if self.account.kind == AUTH_TOKEN:
+        if self.account.kind == AUTH_COOKIE:
             return (
-                "① 令牌是否复制完整；"
-                "② 站点要求用户标识头时，把类型段写成 `token=<用户ID>` 再试；"
-                "③ 该站是不是老 one-api / 部分 fork —— 那类站的 `sk-` 只是模型调用 key，"
-                "不能用于管理接口，得改用 cookie 认证"
+                "① 确认没配 user_id 的站：不少 new-api 站在 **cookie 会话下也强制要求"
+                " New-Api-User 头** —— 服务端原文若提到 New-Api-User / 未登录，就是这种。"
+                "把类型段写成 `cookie=<用户ID>`（行格式）或给对象加 `\"user_id\":\"<用户ID>\"`"
+                "（JSON）即可；用户 ID 在站点「个人设置」页能查到。"
+                "② Cookie 真过期了：重新登录后按 README 的「方式二」再复制一份"
                 + suffix
             )
-        return "会话 Cookie 可能已过期，重新登录后按 README 的「方式二」再复制一份" + suffix
+        return (
+            "① 令牌是否复制完整；"
+            "② 站点要求用户标识头时，把类型段写成 `token=<用户ID>` 再试；"
+            "③ 该站是不是老 one-api / 部分 fork —— 那类站的 `sk-` 只是模型调用 key，"
+            "不能用于管理接口，得改用 cookie 认证"
+            + suffix
+        )
 
     def get_self(self) -> dict:
         body = self.request("GET", SELF_PATH)
