@@ -161,15 +161,57 @@ async function readCookies(site) {
   if (lastError) return { ok: false, cookies: [], error: lastError };
   return { ok: true, cookies: [] };
 }
-/** new-api v1.x 自举：POST /api/user/auth/refresh —— 与站点前端同一逻辑，
-    浏览器自动带上 httpOnly 的刷新 cookie，返回 { access_token, user, session }。
-    v0.x 站没有这个端点，任何失败都静默返回 null。 */
+/** new-api v1.x 自举：POST /api/user/auth/refresh 换 { access_token, user, session }。
+    该端点校验 Origin（CSRF 防护）—— 从扩展页发会被 403 AUTH_ORIGIN_FORBIDDEN 拒掉，
+    所以把请求注进该站**已打开的标签页**里执行（同源 Origin、同 cookie 罐、同 CF 放行状态）。
+    返回 { ok: true, user, access_token } 或 { ok: false, reason }；v0.x 站静默 ok:false。 */
 async function bootstrapV1Auth(site) {
+  const origin = site.replace(/\/+$/, "");
+  let tabs = [];
+  let lastReason = "";
   try {
-    const data = await callApi(site + "/api/user/auth/refresh", { method: "POST", credentials: "include" });
-    const d = data && data.data;
-    return d && d.user && d.user.id ? d : null;
+    tabs = await chrome.tabs.query({ url: origin + "/*" });
   } catch (e) {
-    return null;
+    return { ok: false, reason: "无法查询标签页：" + e.message };
   }
+  if (!tabs.length) {
+    return { ok: false, reason: "该站点的标签页没有打开 —— 自举请求必须从站点自己的页面发出（否则 Origin 校验会拒绝），先开着站点页再点读取" };
+  }
+  for (const tab of tabs) {
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: async () => {
+          try {
+            const res = await fetch("/api/user/auth/refresh", {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+            });
+            const data = await res.json().catch(() => null);
+            const d = data && data.data;
+            if (res.ok && data && data.success === true && d && d.user && d.user.id) {
+              return {
+                ok: true,
+                id: String(d.user.id),
+                username: String(d.user.username || ""),
+                access_token: String(d.access_token || ""),
+              };
+            }
+            return { ok: false, reason: "HTTP " + res.status + " " + ((data && data.message) || "") };
+          } catch (e) {
+            return { ok: false, reason: e.message };
+          }
+        },
+      });
+      const r = res && res.result;
+      if (r && r.ok) {
+        return { ok: true, user: { id: r.id, username: r.username }, access_token: r.access_token };
+      }
+      lastReason = (r && r.reason) || "";
+    } catch (e) {
+      lastReason = e.message;   // 标签页无法注入等
+    }
+  }
+  return { ok: false, reason: lastReason || "自举失败" };
 }

@@ -28,8 +28,15 @@ async function collectSite(site, manualUserId) {
     if (cached && cached.id) userId = cached.id;
   }
   if (!userId) {
-    bundle = await bootstrapV1Auth(site);
-    if (bundle && bundle.user && bundle.user.id) userId = String(bundle.user.id);
+    const boot = await bootstrapV1Auth(site);
+    if (boot && boot.ok) {
+      bundle = { user: boot.user, access_token: boot.access_token || "" };
+      userId = String(boot.user.id);
+      result.v1x = true;
+      result.siteType = "v1x";
+    } else if (boot && boot.reason) {
+      result.errors.push("v1.x 自举失败：" + boot.reason);
+    }
   }
   if (!userId) {
     result.errors.push(
