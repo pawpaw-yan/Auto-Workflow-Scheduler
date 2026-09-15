@@ -35,8 +35,7 @@ function renderExtractInfo() {
     ["用户 ID", state.userId || "（未取到）"],
     ["会话", state.sessionValid ? "有效" : "无效（没登录或被 WAF 拦）"],
     ["Cookie 数", String(state.cookieCount || 0)],
-    ["会话到期", state.sessionExpiresAt ? new Date(state.sessionExpiresAt).toLocaleString() : "—"],
-    ["站点类型", state.siteType === "v1x" ? "new-api v1.x（接口只认令牌 —— 用下面的令牌配 token 方式）" : state.siteType === "checkin-system" ? "独立签到系统（LinuxDo + PoW —— cookie 即凭证，无需令牌）" : "new-api / one-api（cookie 或令牌均可）"],
+    ["站点类型", state.v1x ? "new-api v1.x（接口只认令牌 —— 用下面的令牌配 token 方式）" : "new-api / one-api（cookie 或令牌均可）"],
     ["访问令牌", state.accessToken
       ? (state.accessTokenSource + "（已验证可用）")
       : (state.accessTokenNote || "（未取到）")],
