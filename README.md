@@ -108,7 +108,7 @@ run-project.yml（总入口，把 project 参数解析成具体 workflow）
       ↓
 <项目>.yml（只做声明：配置 + 调用 common/*.sh）
       ↓
-① Apply overrides   → 把 inputs.overrides 写进环境
+① Report ref inputs → 报告本次派发传了哪些配置（只列名称和长度）+ 机密项告警
 ② Check secrets     → 配置自检（默认跳过，调试开关打开才跑）
 ③ Install deps      → 按语言装依赖
 ④ Run               → execute.sh 执行 index.py，输出同时进日志和 output.log
@@ -119,25 +119,29 @@ run-project.yml（总入口，把 project 参数解析成具体 workflow）
 ### 4.2 配置是怎么一层层叠上去的
 
 ```
-┌───────────────────────────────────────────────┐
-│ ① ref      inputs.overrides（派发时传的 JSON） │  ← 最高优先级
-├───────────────────────────────────────────────┤
-│ ② vars / secrets   GitHub Environment 配置     │
-├───────────────────────────────────────────────┤
-│ ③ .env     <项目目录>/.env（本地兜底）         │  ← 最低优先级
-└───────────────────────────────────────────────┘
-                     ↓
-        规则：下面两层只能填补上面空着的键
-                     ↓
-        最终进程环境变量（业务脚本读到的就是它）
+每个配置键一行，① 和 ② 就叠在同一条表达式里：
+
+    KEY: ${{ inputs.KEY || vars.KEY }}        # 机密项写 secrets.KEY
+           └── ① ──┘   └──── ② ────┘
+
+  ┌────────────────────────────────────────────────┐
+  │ ① ref        派发时传的同名 input（空 = 没传）  │  ← 最高优先级
+  ├────────────────────────────────────────────────┤
+  │ ② vars / secrets    GitHub Environment 配置    │
+  └────────────────────────────────────────────────┘
+                        ↓ ①② 合并后注入进程环境
+  ┌────────────────────────────────────────────────┐
+  │ ③ .env     <项目目录>/.env（本地兜底）          │  ← 最低优先级
+  └────────────────────────────────────────────────┘
+              规则：下层只能填补上层空着的键
 ```
 
-对应到脚本：
+对应到实现：
 
 | 层 | 由谁实现 | 怎么生效 |
 |---|---|---|
-| ① ref | `common/apply-overrides.sh` | 写进 `$GITHUB_ENV`，后续所有 step 都能读到 |
-| ② vars / secrets | 项目 workflow 的 `env:` 块 | GitHub 一开始就注入到进程环境 |
+| ① ref | 项目 workflow `env:` 里那个 `\|\|` | `${{ inputs.KEY \|\| vars.KEY }}` —— input 为空就取右边 |
+| ② vars / secrets | 同上，`\|\|` 的右边 | GitHub 一开始就注入到进程环境 |
 | ③ .env | `python/common/dotenv.py` | 业务脚本**启动时自己读**，只在①②都为空时才写进 `os.environ` |
 
 ### 4.3 业务脚本内部（以签到为例）
@@ -286,7 +290,7 @@ GitHub 自带的 cron 不可靠（见 1.1），所以用外部调度器来定时
 
 | 层 | 来源 | 典型用途 | 生效范围 |
 |---|---|---|---|
-| ①（最高） | 派发时的 `inputs.overrides`（JSON） | 临时试一次，不动仓库配置 | 仅本次运行 |
+| ①（最高） | 派发时传的**同名 workflow_dispatch input** | 临时试一次，不动仓库配置 | 仅本次运行 |
 | ② | Environment 的 `secrets` / `vars` | 正式配置 | 长期 |
 | ③（最低） | `<项目目录>/.env` | 运行期兜底默认值 | 本次运行 |
 
@@ -303,12 +307,12 @@ fi                             # 空 / 未设置 → 由 .env 补上
 因为 ①② 走到这一步都已经在进程环境里了，「只填空位」天然就等于这个优先级，不需要额外排序。
 附带好处：`.env` 不可能改坏 `PATH`、`GITHUB_*` 这类运行时变量（它们永远非空）。
 
-> **① 压过 ② 的原理**：`apply-overrides.sh` 把 ref 的值写进 `$GITHUB_ENV`，而 job 级 `env:` 和它写的是
-> **同一个**环境变量字典，且 `$GITHUB_ENV` 在那个 step **结束后**才被处理 → 后写覆盖先写。
-> 官方文档没写这条，结论来自 runner 源码（展开在 [11.1](#111-通用层-common)）。
+> **① 为什么能压过 ②**：两者写在**同一行** —— `KEY: ${{ inputs.KEY || vars.KEY }}`。
+> `||` 取第一个「真值」，而没传的 input 会展开成空字符串（falsy），
+> 所以「传了就用 ①，没传用 ②」，不需要任何额外判断。
 >
-> ⚠️ **唯一能压过 `$GITHUB_ENV` 的是 step 级 `env:`** —— 所以别在 `Run` 那一步写 `env:` 声明同名键，
-> 否则参数覆盖会被**静默吃掉**（不报错，只是不生效）。
+> ⚠️ **代价：没法再用「留空」表达「本次就要它空着」** —— 留空等于回落。
+> 需要这种语义的键得定义一个哨兵值，例如 `GLADOS_EXCHANGE_PLAN=none` 表示「本次不兑换」。
 
 > ⚠️ **「空字符串」被当作「没配置」**：GitHub 上把某个 Variable 留空或不建时，`${{ vars.X }}` 会展开成空字符串，
 > 这个键就交给 `.env` 了。代价是**没法显式表达「这个键就是要空着」**。
@@ -356,67 +360,55 @@ fi                             # 空 / 未设置 → 由 .env 补上
 
 **场景**：想试试换个域名、换个目标规格，但不想改动仓库里已经配好的东西。
 
-**怎么做**：派发时多传一个 `inputs.overrides`，值是一个 **JSON 对象**：
-
-```json
-{"ref":"main","inputs":{"overrides":"{\"DOMAINS\":\"glados.cloud\",\"GLADOS_VERBOSE\":\"true\"}"}}
-```
-
-**但更推荐用 `gh` CLI 或 Actions 页面 —— 这两种写法都不需要你手写转义。**
-
-`gh` CLI（最省事）：
+**怎么做**：每个项目 workflow 都把自己的配置项声明成了 `workflow_dispatch` input，
+所以派发时**同名传一个值**就行，它会顶掉仓库里配的 `vars` / `secrets`：
 
 ```bash
-gh workflow run glados_checkin.yml -f overrides='{"DOMAINS":"glados.cloud","GLADOS_VERBOSE":"true"}'
+# gh（推荐，不用手写转义）
+gh workflow run glados_checkin.yml -f GLADOS_VERBOSE=true -f DOMAINS=glados.cloud
 ```
-
-外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
-
-Actions 页面 → **Run workflow** 的 `overrides` 输入框里，直接粘（纯文本框，不转义、不带外层）：
-
-```
-{"DOMAINS":"glados.cloud","GLADOS_VERBOSE":"true"}
-```
-
-> **为什么 `curl` 那种写法要多套一层 `\"`？** 不是文档写得麻烦，是接口本身如此：
-> `workflow_dispatch` 的 inputs 是**字符串通道**，workflow 里那行
-> `OVERRIDES: ${{ inputs.overrides }}` 拿到的只会是字符串 —— 所以对象必须先序列化一遍、
-> 再嵌进 HTTP body。`gh` 和网页帮你做了这一步，所以你不用管。
->
-> 真要自己拼 body 就交给 `jq` 生成，别手写：
-> `jq -nc --argjson ov '{"DOMAINS":"glados.cloud"}' '{ref:"main",inputs:{overrides:($ov|tojson)}}'`
-
-如果值本身是多行（比如 cookie 列表、域名列表），在 JSON 里用 `\n` 转义：
 
 ```json
-{"COOKIES": "koa:sess=AAA; koa:sess.sig=BBB\nkoa:sess=CCC; koa:sess.sig=DDD",
- "DOMAINS": "glados.cloud\nrailgun.info"}
+// REST API / cron-job.org 的 Request body
+{"ref":"main","inputs":{"GLADOS_VERBOSE":"true","DOMAINS":"glados.cloud"}}
 ```
+
+> ⚠️ **body 的顶层只能有 `ref` 和 `inputs`。** 写成
+> `{"ref":"main","GLADOS_VERBOSE":"true"}` 会被 GitHub 拒掉：
+> `Invalid request. "GLADOS_VERBOSE" is not a permitted key.`
+> 配置键必须放进 `inputs` 里。
+
+在 **Actions 页面**更省事：点 **Run workflow**，每个配置项都是一个**独立输入框**，
+留空就用仓库配置 —— 不用写 JSON、不用转义。
 
 **行为约定：**
 
 | 点 | 说明 |
 |---|---|
 | 生效范围 | **只影响这一次运行**，仓库里的配置一个字节都不动 |
-| 怎么实现的 | `common/apply-overrides.sh`，排在 checkout 之后、其余 step 之前，写进 `$GITHUB_ENV` |
-| 白名单 | 只能覆盖 workflow 里登记过的项（默认取 `SECRET_NAMES` + `VARIABLE_NAMES`，可用 `OVERRIDE_NAMES` 单独指定）。越界直接报错 |
-| 拒绝项 | `GITHUB_*` / `RUNNER_*` 一律拒绝 —— 防止有人通过覆盖把 runner 环境搞坏 |
-| 值不回显 | 日志和摘要里**只列被替换的项名**，绝不显示值 |
-| 机密项告警 | 被替换的项若登记在 `SECRET_NAMES` 里（值是凭据），自动打一条 `::warning::`，摘要里那一行也会标成「⚠️ **机密**」—— ref 传参等于把这些值公开 |
-| 摘要提示 | Job Summary 最上方会出现「本次运行替换了配置项」表格 |
-| 留空 | 不传 / 传空串 / 传 `{}` → 整步跳过，完全使用仓库配置 |
+| 怎么实现的 | 就是 workflow `env:` 里那行 `KEY: ${{ inputs.KEY \|\| vars.KEY }}`，没有额外脚本 |
+| 可覆盖范围 | **workflow 里声明了 input 的项**才可传；传了没声明的键会被 GitHub 拒（422） |
+| 值不回显 | 日志和摘要里**只列名字和长度**，绝不显示值 |
+| 机密项告警 | 被传入的项若登记在 `SECRET_NAMES` 里（值是凭据），自动打一条 `::warning::`，摘要里那一行也会标成「⚠️ **机密**」 |
+| 摘要提示 | `common/report-inputs.sh` 在 Job Summary 最上方列出「本次传了哪些项」+ 长度 |
+| 留空 | 留空 = 回落，等价于「没传」 |
+
+> **长度拿来干什么？** 对照预期：「值没传进来」会是 0；复制漏字符、或换行没转义，
+> 会比预期短。比如 `SITES` 该是 67 字节却显示 20，那就是传截断了。
 
 > ⚠️ **`workflow_dispatch` 的 inputs 不是机密** —— 它会出现在 run 的详情页和事件详情里，公开仓库等于公开。
 > 所以这个入口适合临时换域名、开关、目标数量这类**非敏感**配置；
 > **不要拿它传 cookie / 私钥**。长期配置请老老实实放 `vars` / `secrets`。
 
-**通过总入口传参**：`run-project.yml` 会把 `overrides` **原样转发**给被派发的项目。
+> ⚠️ **「留空 = 回落」的代价**：没法再用「留空」表达「本次就要它空着」。
+> 需要这种语义的键得定义一个哨兵值 —— 例如 `GLADOS_EXCHANGE_PLAN=none` 表示「本次不兑换」。
+
+**总入口 `run-project.yml` 不传参数** —— 它只负责把 `project` 解析成具体 workflow。
+各项目的配置项名字只有它自己知道，总入口没法转发。要临时改配置，**直接派发对应项目**：
 
 ```json
-{"ref":"main","inputs":{"project":"glados_checkin","overrides":"{\"GLADOS_VERBOSE\":\"true\"}"}}
+{"ref":"main","inputs":{"project":"glados_checkin"}}
 ```
-
-> 被派发的项目 workflow 必须声明 `inputs.overrides`，否则 GitHub 会返回 422。
 
 ### 6.5 本地 `.env` 层
 
@@ -478,7 +470,7 @@ Content-Type: application/json
 
 ### 7.3 方式三：Actions 页面手动
 
-**Actions** → 左侧选项目 → **Run workflow**（可以顺便填 `overrides`）
+**Actions** → 左侧选项目 → **Run workflow**（每个配置项会是一个独立输入框，留空 = 用仓库配置）
 
 手动触发不需要 PAT，适合调试。
 
@@ -543,11 +535,11 @@ logger = init_logger("xxx_checkin")
 复制完检查一下有没有这些（它们是「通用层」生效的前提）：
 
 ```yaml
-# 1. 声明 inputs.overrides，否则总入口转发参数会 422
+# 1. 每个可覆盖的配置项，声明一个同名 input
 on:
   workflow_dispatch:
     inputs:
-      overrides:
+      MY_KEY:
         required: false
         default: ''
         type: string
@@ -556,10 +548,13 @@ on:
 DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
 COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
 
-# 3. 参数覆盖的入口
-OVERRIDES: ${{ inputs.overrides }}
+# 3. 配置来源：ref 优先、留空回落（每个配置项一行）
+MY_KEY: ${{ inputs.MY_KEY || vars.MY_KEY }}
 
-# 4. 自检清单（同时也是参数覆盖的白名单）
+# 4. 给 report-inputs.sh 用：本次传了哪些项（机密项会据此告警）
+REF_INPUTS: ${{ toJSON(inputs) }}
+
+# 5. 自检清单；SECRET_NAMES 同时决定哪些项算「机密」
 SECRET_NAMES:   "..."
 VARIABLE_NAMES: "..."
 ```
@@ -572,8 +567,8 @@ VARIABLE_NAMES: "..."
 steps:
   - uses: actions/checkout@v4
 
-  - name: Apply overrides          # 必须在最前面
-    run: bash common/apply-overrides.sh
+  - name: Report ref inputs        # 紧跟 checkout 即可
+    run: bash common/report-inputs.sh
 
   # ... 中间的 setup / install / check ...
 
@@ -588,7 +583,7 @@ steps:
 ### 9.6 验证清单
 
 - [ ] Actions 页面能看到这个 workflow
-- [ ] 手动跑一次，**Apply overrides** 这个 step 显示跳过（绿色）而不是报错
+- [ ] 手动跑一次，**Report ref inputs** 这个 step 显示「本次没有通过 ref 传入参数，本步跳过」
 - [ ] `Run` 有输出，`Job Summary` 有内容
 - [ ] 打开 `DEBUG_MODE` 重跑一次，自检表里每一项 `EMPTY` 都是 `no`
 
@@ -668,27 +663,22 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 |---|---|---|
 | `install-deps.sh` | 按语言装依赖（语言级公共 + 项目独有，两级） | 每个项目都跑 |
 | `check-secrets.sh` | 配置自检：secret 出 HMAC 指纹，variable 出明文 | **默认跳过**，开调试开关才跑 |
-| `apply-overrides.sh` | 参数覆盖（最高优先级）：把 `inputs.overrides` 注入本次运行 | 每个项目都跑（没传参数则跳过） |
+| `report-inputs.sh` | 报告本次通过 ref 传了哪些项（只列名称 + 长度），机密项打 `::warning::` | 每个项目都跑（没传参数则跳过） |
 | `execute.sh` | 按入口扩展名执行脚本，输出 `tee` 到 `output.log` | 每个项目都跑 |
 | `render-summary.sh` | 把 `output.log` 渲染成 Job Summary | 每个项目都跑（建议 `if: always()`） |
 
-> **为什么 `apply-overrides.sh` 写 `$GITHUB_ENV` 就能压过项目 workflow 里的 `env:`？**
-> 官方文档只说了 `$GITHUB_ENV` 对后续 step 可见，**没写**冲突时谁赢。runner 源码里是确定的：
+> **`report-inputs.sh` 读什么？** 读 `REF_INPUTS` —— 由 workflow 里
+> `REF_INPUTS: ${{ toJSON(inputs) }}` 提供的**原始 inputs**。
+> 它只看名字和长度、给机密项打告警，**不修改任何配置** ——
+> 值的生效靠 workflow `env:` 里那行 `inputs.X || vars.X`。
 >
-> 1. job 级 `env:` → `JobExtension.InitializeJob` 写进 `context.Global.EnvironmentVariables`
-> 2. `$GITHUB_ENV` → `FileCommandManager` 的 `SetEnvFileCommand` 写进**同一个** `Global.EnvironmentVariables`，
->    而且是在那个 step **结束后**才处理 → **后写覆盖先写**
-> 3. 每个 step 组装环境时（`StepsRunner.RunAsync`）先铺这个字典，**最后**才合并 step 级 `env:`
->
-> 所以真实优先级是 `step 级 env > $GITHUB_ENV > job / workflow 级 env`。
-> `apply-overrides.sh` 是**独立的一个 step**，所以它天然拿下 `vars` / `secrets`，
-> 三个项目共用这一条机制，谁都不需要自己再读一遍 ref。
+> 用**原始 inputs** 而不是回落后的环境变量，是因为后者分不清「传了个空值」和「没传」。
 
 ### 11.2 workflow
 
 | 文件 | 作用 |
 |---|---|
-| `run-project.yml` | 总入口，按 `project` 参数派发到具体项目（同时也是 `overrides` 的转发者） |
+| `run-project.yml` | 总入口，按 `project` 参数派发到具体项目（**不传配置参数**） |
 | `<项目名>.yml` | 项目 workflow，只做「声明」：配置 + 调用 `common/*.sh` |
 
 ### 11.3 各项目

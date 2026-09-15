@@ -10,7 +10,7 @@
 
 最终优先级（高 → 低）：
 
-    ref（inputs.overrides）  >  vars / secrets（workflow env）  >  .env
+    ref（同名 workflow_dispatch input）  >  vars / secrets（workflow env）  >  .env
 
 落地方式就一条规则：**只填补当前环境里「未设置或为空」的项**。
 业务脚本跑到这里时，上面两层都已经在 `os.environ` 里了，所以 `.env` 天然只能捡剩下的空位。

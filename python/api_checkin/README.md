@@ -115,21 +115,31 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ## 用 ref 传账号（可选，但请先读警告）
 
-派发时把整个账号表塞进 `inputs.overrides.SITES`，就不用去网页改 Secret 了。
+派发时传一个 `SITES` 参数，就不用去网页改 Secret 了。
 
-**你真正要写的就是下面这段**（这就是 `overrides` 的值）：
+### 先分清两个东西，这里最容易错
+
+**① `SITES` 的值**（账号表本身）—— Actions 页面上那个 `SITES` 输入框填它：
 
 ```json
-{
-  "SITES": {
-    "https://a.com": {
-      "cookies": ["session=xxx"],
-      "tokens":  ["aNSC....Y/8", {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]
-    },
-    "https://b.com": {"tokens": ["sk-qqq"]}
-  }
-}
+{"https://a.com":{"cookies":["session=xxx"],"tokens":["aNSC....Y/8",{"token":"sk-zzz","user_id":"1001","label":"小号"}]},"https://b.com":{"tokens":["sk-qqq"]}}
 ```
+
+**② 完整的 HTTP body** —— curl / cron-job.org 填它：参数名叫 `SITES`，值是**转义过的字符串**：
+
+```json
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}"}}
+```
+
+> ⚠️ **别把这两个混起来。** 最常见的错误写法是把账号表直接放在顶层：
+>
+> ```json
+> {"ref":"main","SITES":{...}}          ❌
+> ```
+>
+> GitHub 会回你 **`Invalid request. "SITES" is not a permitted key.`**
+> 因为 dispatch 接口的 body **只允许 `ref` 和 `inputs` 两个顶层键** ——
+> 配置必须放在 `inputs` 里。详见下面的「三种入口」。
 
 **结构：站点 → 分桶 → 凭证数组。** 桶名就是类型：
 
@@ -172,32 +182,32 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ```bash
 gh workflow run api_checkin.yml \
-  -f overrides='{"SITES":{"https://a.com":{"tokens":["aNSC....Y/8"]}}}'
+  -f SITES='{"https://a.com":{"tokens":["aNSC....Y/8"]}}'
 ```
 
 外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
-走总入口就把工作流换成 `run-project.yml` 并加 `-f project=api_checkin`。
 
 > ⚠️ 单引号里不能再出现 `'`。cookie 和令牌都不会有它；
-> 真遇到就从文件读：`gh workflow run api_checkin.yml -f overrides="$(jq -c '{SITES:.}' sites.json)"`。
+> 真遇到就从文件读：`gh workflow run api_checkin.yml -f SITES="$(cat sites.json)"`。
 
 **② Actions 页面 → Run workflow**
 
-`overrides` 输入框里**直接粘上面那段**，不转义、不带外层。就是纯文本框，你输入什么就是什么。
+界面上每个配置项是一个**独立输入框**。往 `SITES` 那个框里**直接粘上面那段**，
+不转义、不带外层 —— 它就是纯文本框，你输入什么就是什么。
 
 **③ 只能自己拼 HTTP body 时（cron-job.org 这类）**
 
-这种场景**避不开转义**，因为 `inputs.overrides` 在 workflow 里声明的是 `type: string`：
+参数名就是 `SITES`，只是值是**字符串**，所以账号表那段 JSON 要转义一遍：
 
 ```json
-{"ref":"main","inputs":{"overrides":"{\"SITES\":{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}"}}
 ```
 
 别手写，交给 `jq` 生成：
 
 ```bash
 body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":["aNSC....Y/8"]}}' \
-        '{ref:"main", inputs:{overrides: ({SITES:$sites} | tojson)}}')
+        '{ref:"main", inputs:{SITES: ($sites | tojson)}}')
 curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github+json" \
   https://api.github.com/repos/<owner>/<repo>/actions/workflows/api_checkin.yml/dispatches \
   -d "$body"
@@ -206,10 +216,10 @@ curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github
 > ⚠️ **必须写成一行**。HTTP body 的 JSON 字符串内部不能出现真换行，
 > 为可读性折行再粘贴，GitHub 会直接返回 **400**（要换行只能写 `\n`）。
 
-> **为什么 ③ 一定要套两层？** 不是文档写得麻烦，是接口本身如此：
-> `workflow_dispatch` 的 inputs 是**字符串通道**，workflow 里那行
-> `OVERRIDES: ${{ inputs.overrides }}` 拿到的只会是字符串 —— 所以对象必须先序列化一遍，
-> 再嵌进 HTTP body。① 和 ② 之所以不用转义，就是因为 `gh` / 网页帮你做了这一步。
+> **为什么 ③ 要转义？** 不是文档写得麻烦，是接口本身如此：
+> `workflow_dispatch` 的 input 值**永远是字符串**，而账号表是 JSON 对象 ——
+> 所以它必须先序列化成字符串、再嵌进 body。① 和 ② 之所以不用管，
+> 就是因为 `gh` / 网页帮你做了这一步。
 
 ### 早期写法：扁平数组（继续支持）
 
@@ -251,21 +261,24 @@ curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github
 
 用 ref 传 `SITES` 时，run 顶部会**自动出现一条 `::warning::`**，不会让你忘了这回事。
 
-> 这条告警来自**通用层** `common/apply-overrides.sh`，不是本项目的特殊逻辑：
-> 它检查被替换的项里有没有登记在 `SECRET_NAMES` 里的（`SITES` 在里面），有就打。
+> 这条告警来自**通用层** `common/report-inputs.sh`，不是本项目的特殊逻辑：
+> 它检查被传入的项里有没有登记在 `SECRET_NAMES` 里的（`SITES` 在里面），有就打。
 > 所以以后给这个项目加任何新的机密项，告警会自动跟着生效，一行代码都不用改。
 
-### ref 一定赢
+### ref 优先，靠的是一个 `||`
 
-`ref > vars/secrets > .env` 由 `common/apply-overrides.sh` 统一实现，**本项目没有任何特殊处理** ——
-它把 ref 的值写进 `$GITHUB_ENV`，后续所有 step 读到的就是新值，和另外两个项目走的是同一条路。
+`ref > vars/secrets > .env` 里前两层写在 workflow 的**同一行**：
 
-> **为什么 `$GITHUB_ENV` 能压掉 workflow `env:` 里的同名变量？** 官方文档没写这条，
-> 但从 runner 源码可以确认：job 级 `env:` 和 `$GITHUB_ENV` 写的是**同一个**
-> `Global.EnvironmentVariables` 字典，而 `$GITHUB_ENV` 在该 step **结束后**才处理 → 后写覆盖先写。
->
-> ⚠️ 唯一能压过 `$GITHUB_ENV` 的是 **step 级 `env:`**（组装 step 环境时最后合并）。
-> 所以**不要在 `Run` 那一步写 `env: {SITES: ...}`**，否则参数覆盖会被**静默吃掉**。
+```yaml
+SITES: ${{ inputs.SITES || secrets.SITES }}
+```
+
+没传的 input 会展开成**空字符串**（falsy），所以 `||` 就取右边 ——
+「传了用 ref，没传用仓库配置」。没有额外脚本，也不再经过 `$GITHUB_ENV`。
+
+第三层 `.env` 由业务脚本启动时自己读，只填上面两层都空着的键（见根 README「配置体系」）。
+
+> ⚠️ **代价：留空 = 回落**，所以没法用「留空」表达「本次就要它空着」。
 
 ---
 
@@ -384,17 +397,28 @@ https://api.example.com #2 [小号] cookie | repeat
 > 通用问题（变量没生效、Summary 是空的、调度器没触发……）见
 > [根 README「常见问题（通用）」](../../README.md#10-常见问题通用)。下面是本项目专属的。
 
+### `Invalid request. "SITES" is not a permitted key.`
+
+派发的 body 写错了 —— **`SITES` 被放在了顶层**。dispatch 接口的 body 只允许 `ref` 和 `inputs`
+两个顶层键。对照「用 ref 传账号」开头的两个写法，正确的长这样：
+
+```json
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"sk-x\"]}}"}}
+```
+
 ### 令牌认证报 401 / 403
 
 按顺序排查：
 
 1. **令牌复制是否完整** —— 那一长串都要，别漏字符
-2. **类型有没有指定** —— 令牌请显式写 `token:<值>`。裸写且恰好含 `=` 时会被当成 cookie，
+2. **类型有没有指定** —— 首选放进 `tokens` 桶（桶名即类型，不用猜）。若用扁平数组，
+   非 `sk-` 开头的令牌必须写 `token:<值>`；裸写且恰好含 `=` 时会被误判成 cookie，
    请求头整个发错，现象同样是 401
-3. **补上用户 ID** —— 把类型段写成 `token=<用户ID>`，会多带一个 `New-Api-User` 头
+3. **补上用户 ID** —— 令牌认证要带 `New-Api-User: <用户ID>` 头。桶内写成
+   `{"token":"...","user_id":"..."}` 即可；不知道这个数字就先跑一次 cookie，日志里会打出来
 4. **这个站是不是 New API 新版** —— 老 one-api / 部分 fork 的 `sk-` 只是模型调用 key，
    不能用管理接口，**这类站请改用 cookie**
-4. **令牌是否被禁用 / 删除** —— 去站点个人设置里看一眼
+5. **令牌是否被禁用 / 删除** —— 去站点个人设置里看一眼
 
 ### Cookie 认证报 401 / 403
 

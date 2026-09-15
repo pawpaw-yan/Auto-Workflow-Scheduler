@@ -261,7 +261,7 @@ workflow 的 `env:` 里已经把三者映射成了脚本实际读取的 `GRAB_OC
 | 场景 | 该写哪个 |
 |---|---|
 | `.env` 文件 | 脚本变量名（`GRAB_OCPUS`），不是 `OCPU` |
-| 参数覆盖 `inputs.overrides` 的键 | 脚本变量名（`{"TARGET_OCPUS":"4"}`），不是 `TARGET` |
+| 参数覆盖的 input 名 | 也是脚本变量名（`TARGET_OCPUS`）—— input 名就是照变量名声明的 |
 
 > 写错的现象是「覆盖明明没报错，但行为没变」。完整对应关系见
 > `python/oracle-abc/.env.example` 里的注释。
@@ -349,7 +349,7 @@ python index.py
 ```
 
 本地用 `OCI_CLI_KEY_FILE` 指定私钥路径，比把内容塞进环境变量方便。
-（注意 `OCI_CLI_KEY_FILE` 不在默认的覆盖白名单里，想用参数覆盖它得先在 workflow 里加 `OVERRIDE_NAMES`。）
+（注意 `OCI_CLI_KEY_FILE` 没有声明成 input，所以不能用 ref 传；要临时用它，得先在 workflow 里加一个同名 input。）
 
 > 💡 不想每次 export 的话，可以把项目目录下的 `.env.example` 复制成 `.env` 填好 ——
 > `index.py` 启动时会自己读它，把没设置或为空的项补上。
