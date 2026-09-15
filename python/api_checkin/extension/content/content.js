@@ -14,24 +14,35 @@
   let panel = null;
   let backdrop = null;
 
-  function savedPos() {
-    try { return JSON.parse(localStorage.getItem(POS_KEY) || "null"); }
-    catch (e) { return null; }
+  /* 位置存在扩展自己的 chrome.storage 里（不是页面的 localStorage）——
+     localStorage 是按站点隔离的，那样在 A 站拖动、B 站不会跟着变。 */
+  function loadPos(apply) {
+    try {
+      chrome.storage.local.get(POS_KEY, (data) => {
+        const p = data && data[POS_KEY];
+        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) apply(p.x, p.y);
+      });
+    } catch (e) { /* 存储不可用就用 CSS 默认位置 */ }
   }
 
-  /* ── 呼出按钮：默认右上角，可拖动，位置记在 localStorage ── */
+  function savePos(x, y) {
+    try { chrome.storage.local.set({ [POS_KEY]: { x: x, y: y } }); }
+    catch (e) { /* 忽略 */ }
+  }
+
+  /* ── 呼出按钮：默认右上角，可拖动，位置跨站点共用 ── */
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "acsx-launcher";
   btn.className = "acsx-launcher";
   btn.textContent = "账号小助手";
 
-  const pos = savedPos();
-  if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
-    btn.style.left = pos.x + "px";
-    btn.style.top = pos.y + "px";
+  // 位置是异步读的：先按 CSS 默认（右上角）挂着，读到再挪过去
+  loadPos((x, y) => {
+    btn.style.left = x + "px";
+    btn.style.top = y + "px";
     btn.style.right = "auto";
-  } // 否则吃 CSS 默认位置（右上角）
+  });
 
   let dragging = false;
   let moved = false;
@@ -68,12 +79,7 @@
   btn.addEventListener("pointerup", () => {
     dragging = false;
     if (moved) {
-      try {
-        localStorage.setItem(POS_KEY, JSON.stringify({
-          x: parseFloat(btn.style.left),
-          y: parseFloat(btn.style.top),
-        }));
-      } catch (err) { /* 隐私模式等，忽略 */ }
+      savePos(parseFloat(btn.style.left), parseFloat(btn.style.top));
     } else {
       toggleMenu();
     }
@@ -101,7 +107,7 @@
     menu = document.createElement("div");
     menu.className = "acsx-menu";
 
-    [["🔑 提取账号", "extract"], ["🧾 SITES JSON", "sites"]].forEach((pair) => {
+    [["🔑 提取签到信息", "extract"], ["🧾 SITES JSON", "sites"], ["⏰ 定时任务", "cron"]].forEach((pair) => {
       const item = document.createElement("button");
       item.type = "button";
       item.textContent = pair[0];

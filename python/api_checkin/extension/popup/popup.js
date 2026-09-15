@@ -39,6 +39,7 @@ function switchTab(name) {
   document.querySelectorAll(".tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   byId("panel-extract").hidden = name !== "extract";
   byId("panel-sites").hidden = name !== "sites";
+  byId("panel-cron").hidden = name !== "cron";
   if (name === "sites" && typeof refreshStoredInfo === "function") refreshStoredInfo();
 }
 
@@ -69,8 +70,11 @@ document.querySelectorAll("button.copy[data-target]").forEach((button) => {
   button.addEventListener("click", () => copyText(byId(button.dataset.target).value, button));
 });
 
-// 深链：content.js 的 iframe 带 ?tab=sites/extract 直达对应面板
-switchTab(new URLSearchParams(location.search).get("tab") === "sites" ? "sites" : "extract");
+// 深链：content.js 的 iframe 带 ?tab=sites/cron/extract 直达对应面板
+const TAB_NAMES = ["extract", "sites", "cron"];
+switchTab(TAB_NAMES.indexOf(new URLSearchParams(location.search).get("tab")) === -1
+  ? "extract"
+  : new URLSearchParams(location.search).get("tab"));
 
 // 焦点在 iframe 内时，外层收不到 keydown —— Esc 在这里转发给外层收起面板
 window.addEventListener("keydown", (e) => {

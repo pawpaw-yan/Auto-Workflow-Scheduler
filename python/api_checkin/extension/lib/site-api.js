@@ -234,3 +234,76 @@ async function bootstrapV1Auth(site) {
   }
   return { ok: false, reason: lastReason || "自举失败" };
 }
+
+/* ── 签到入口：探测 / 试打 / 账号密码登录 ── */
+
+/** 候选签到路径：标准 new-api 是第一个，其余是各 fork 的改法（按命中率排序） */
+const CHECKIN_CANDIDATES = [
+  "/api/user/checkin",
+  "/api/checkin",
+  "/api/user/sign_in",
+  "/api/user/signin",
+  "/api/user/attendance",
+];
+
+function authHeaders(credential) {
+  return credential && credential.kind === "token" && credential.value
+    ? { Authorization: "Bearer " + credential.value }
+    : {};
+}
+
+/**
+ * 探测站点真实的签到入口：逐个 POST 候选路径，返回第一个「存在」的。
+ * 404 = 这个路径不存在，换下一个；401/403/405/200 都说明路径在，只是凭证或方法的问题；
+ * 撞到 WAF 挑战页时判断不了 —— 标成 certain:false，让面板把话说清楚。
+ * 返回 { path, certain, message } 或 null（全都 404）。
+ */
+async function probeCheckinPath(site, credential) {
+  for (const path of CHECKIN_CANDIDATES) {
+    try {
+      const data = await callApi(site + path, {
+        method: "POST",
+        userId: credential.userId,
+        headers: authHeaders(credential),
+      });
+      return { path: path, certain: true, message: String((data && data.message) || "") };
+    } catch (e) {
+      const msg = String((e && e.message) || "");
+      if (/HTTP 404/.test(msg)) continue;
+      if (/响应不是 JSON/.test(msg)) return { path: path, certain: false, message: msg };
+      return { path: path, certain: true, message: msg };
+    }
+  }
+  return null;
+}
+
+/** 真的打一次签到接口：站点自己的文案原样带回（成功 / 今日已签到 / 失败原因） */
+async function tryCheckin(site, path, credential) {
+  const data = await callApi(site + path, {
+    method: "POST",
+    userId: credential.userId,
+    headers: authHeaders(credential),
+  });
+  return { success: data.success === true, message: String((data && data.message) || "") };
+}
+
+/** 用户名 + 密码登录（new-api 的 POST /api/user/login）→ 拿会话 cookie 或令牌。
+    成功后浏览器会自动存下 Set-Cookie，所以直接从 cookie 罐里读回来就行。 */
+async function loginWithPassword(site, username, password) {
+  const data = await callApi(site + "/api/user/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: username, password: password }),
+  });
+  if (!data || data.success !== true) {
+    return { ok: false, reason: String((data && data.message) || "登录失败") };
+  }
+  const d = data.data || {};
+  const token = String(d.access_token || d.token || "");
+  const jar = await readCookies(site);
+  const cookie = cookieHeader(jar.cookies);
+  if (!token && !cookie) {
+    return { ok: false, reason: "登录接口返回成功，但既没拿到令牌也没拿到会话 cookie" };
+  }
+  return { ok: true, token: token, cookie: cookie, userId: String(d.user_id || d.id || "") };
+}

@@ -19,14 +19,36 @@
 
 ## 用法
 
-**呼出**：任意页面右上角有可拖动的「账号小助手」按钮（拖过的位置会记住），点开是二级菜单：
-「🔑 提取账号」/「🧾 SITES JSON」，弹出居中的毛玻璃面板（Esc / 点遮罩 / × 关闭）。
+**呼出**：任意页面右上角有可拖动的「账号小助手」按钮，点开是二级菜单：
+「🔑 提取签到信息」/「🧾 SITES JSON」/「⏰ 定时任务」，弹出居中的毛玻璃面板（Esc / 点遮罩 / × 关闭）。
 工具栏图标点开的是同一份 UI，两条入口等价。
 
-**提取账号**：在已登录的 new-api / one-api 站点页打开面板（站点地址自动填好）→ 读取。
+> **拖动的位置是全局的** —— 存在扩展的 `chrome.storage` 里，不是页面的 `localStorage`。
+> 所以在 A 站拖到哪儿，B 站打开也在哪儿（`localStorage` 是按站点隔离的，做不到这件事）。
+
+**提取签到信息**：在已登录的 new-api / one-api 站点页打开面板（站点地址自动填好）→ 读取。
 依次拿到：完整 Cookie（含 httpOnly）、用户 ID（站点 localStorage 兜底 + 手填框）、
 会话有效性（真发请求过 WAF）、访问令牌（`/api/user/self` 的字段 → 候选字段逐个真验证
-→ `GET /api/user/token`；掩码形如 `sk-abc1****WXYZ` 的值直接跳过，绝不交给没验证过的值）。
+→ `GET /api/user/token`；掩码形如 `sk-abc1****WXYZ` 的值直接跳过，绝不交给没验证过的值）、
+**签到入口**（见下）。
+
+**签到入口**：读到凭证后自动扫一遍候选路径（`/api/user/checkin` → `/api/checkin`
+→ `/api/user/sign_in` → `/api/user/signin` → `/api/user/attendance`），
+第一个不是 404 的就是这个站的签到入口，填进「签到入口」框。
+「🎫 测试签到入口」会**真的打一次**，把站点自己的话带回来（成功 / 今日已签到 / 失败原因）。
+
+> 探到的路径会写进 SITES JSON 的 `checkin_path` 字段 —— `index.py` 拿到它就直接请求、
+> **一次都不用回退探测**，日志也清爽。撞到 WAF 挑战页时探不准，面板会标「疑似入口」并提示再测一次。
+
+**认证方式**：三选一 ——
+
+| 方式 | 怎么用 |
+|---|---|
+| **访问令牌**（推荐） | 长效、不过期。面板自动取，取不到就去站点「个人设置 → 安全设置」复制粘进来 |
+| **Cookie** | 会话 cookie，会过期。面板用 `chrome.cookies` 连 httpOnly 一起读出来 |
+| **账号 + 密码** | 展开后填站点用户名密码，点「登录」调 `POST /api/user/login`，拿到会话 cookie / 令牌后填回下面的框 |
+
+选哪种，扫描与测试就按哪种凭证发请求。
 
 **new-api v1.x 站**（`/api/status` 里 version 是 `v1.*`）：这类站的接口**只认 Bearer 令牌、
 不认会话 cookie**，用 cookie 调管理接口必然 401。面板的处理：
@@ -46,6 +68,21 @@
 去重后并进 `chrome.storage.local`；「→ 跨标签页填进 GitHub」把结果填进所有已打开的
 `…/actions/workflows/api_checkin.yml` 派发表单（自动触发 input 事件，React 表单认）。
 
+**定时任务**：填一次 cron-job.org 的 API key、GitHub 仓库（`owner/repo`）和 PAT，
+点「⏰ 创建 / 更新定时任务」，扩展调 cron-job.org 的 REST API 建一个每天定点触发的
+POST 任务 —— 目标就是 GitHub 的 `workflow_dispatch` 接口，SITES 放在请求体里。
+同名任务已存在就 **PATCH 更新**，不会重复建；「查看已有任务」列一遍确认。
+
+| 配置项 | 从哪来 |
+|---|---|
+| cron-job.org API key | 登录 cron-job.org → 控制台 **Settings** 里生成 |
+| GitHub 仓库 | 形如 `owner/repo` |
+| GitHub PAT | 需要 **Actions 写权限**（fine-grained 或 classic 都行） |
+
+> 为什么绕这一层：GitHub 自带的 `schedule` 对**公共仓库超过 60 天无活动会静默停掉**，
+> 外部定时触发更稳。API key / PAT 只存在本机 `chrome.storage.local`，
+> 只发往 cron-job.org 与 GitHub 两家。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -57,6 +94,8 @@
 | `lib/verify.js` | 令牌验证：严格一次（`credentials:"omit"`，不带会话 cookie），没过就是没过 |
 | `lib/access-token.js` | 访问令牌的三级来源，全程真验证 |
 | `lib/collect.js` | 单站点提取主流程（每步失败都记进 errors，不丢已拿到的值） |
+| `lib/cronjob.js` | cron-job.org REST API 封装（列 / 建 / 改任务） |
+| `popup/panel-cron.js` | 「定时任务」面板：一键把 SITES 绑成 cron-job.org 的定时任务 |
 | `popup/` | 面板 UI（工具栏图标与页面内按钮共用同一份） |
 | `content/content.js` | 页面内注入：可拖动呼出按钮 + 二级菜单 + 居中面板（内嵌 popup.html 的 iframe，扩展权限完整保留） |
 | `content/content.css` | 注入元素的样式（类名全部带 acsx- 前缀，不碰宿主页面） |

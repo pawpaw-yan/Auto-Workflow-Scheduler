@@ -8,8 +8,9 @@
   <header class="topbar">
     <div class="brand">🛠 账号小助手</div>
     <nav class="tabs">
-      <button data-tab="extract" class="tab active" type="button">提取账号</button>
+      <button data-tab="extract" class="tab active" type="button">提取签到信息</button>
       <button data-tab="sites" class="tab" type="button">SITES JSON</button>
+      <button data-tab="cron" class="tab" type="button">定时任务</button>
     </nav>
   </header>
 
@@ -30,6 +31,23 @@
       <button id="retryBtn" type="button">重试</button>
     </div>
 
+    <div class="row">
+      <label>认证方式</label>
+      <select id="authMode">
+        <option value="token">访问令牌</option>
+        <option value="cookie">Cookie</option>
+        <option value="password">账号 + 密码</option>
+      </select>
+    </div>
+
+    <div id="passwordRow" class="row" hidden>
+      <label>账号</label>
+      <input id="loginUser" type="text" spellcheck="false" placeholder="用户名 / 邮箱">
+      <label>密码</label>
+      <input id="loginPass" type="password" spellcheck="false" placeholder="站点登录密码">
+      <button id="loginBtn" type="button">登录</button>
+    </div>
+
     <div class="row title"><b>提取到的值</b></div>
     <div class="row">
       <label>用户 ID</label>
@@ -48,8 +66,17 @@
     </div>
 
     <div class="row">
-      <button id="testTokenBtn" type="button">🔍 测试访问令牌</button>
+      <label>签到入口</label>
+      <input id="checkinPath" type="text" spellcheck="false" placeholder="点「扫描」自动探测，或手填 /api/xxx">
+      <button id="scanCheckinBtn" type="button">扫描</button>
+    </div>
+
+    <div class="row">
+      <button id="testTokenBtn" type="button">🔍 测试令牌</button>
       <button id="testCookieBtn" type="button">🔍 测试 Cookie</button>
+      <button id="testCheckinBtn" type="button">🎫 测试签到入口</button>
+    </div>
+    <div class="row">
       <button id="toSitesBtn" class="primary" type="button">＋ 填进 SITES（追加）</button>
     </div>
     <div id="testResult" class="status"></div>
@@ -94,6 +121,43 @@
     <div id="fillResult" class="hint"></div>
   </section>
 
+  <!-- ③ 定时任务（cron-job.org） -->
+  <section id="panel-cron" hidden>
+    <div class="row title"><b>一键绑定到 cron-job.org</b></div>
+    <p class="hint">
+      建一个定时任务，每天定时 POST GitHub 的 <code>workflow_dispatch</code> 接口触发签到 ——
+      不用 GitHub 自己的 cron（公共仓库超过 60 天不活动会被停掉）。
+      API key 与令牌只存在本机 <code>chrome.storage.local</code>，只发往 cron-job.org 与 GitHub。
+    </p>
+
+    <div class="row">
+      <label>cron-job API key</label>
+      <input id="cronKey" type="password" spellcheck="false" placeholder="cron-job.org 控制台 → Settings 生成">
+    </div>
+    <div class="row">
+      <label>GitHub 仓库</label>
+      <input id="cronRepo" type="text" spellcheck="false" placeholder="owner/repo">
+    </div>
+    <div class="row">
+      <label>GitHub PAT</label>
+      <input id="cronPat" type="password" spellcheck="false" placeholder="需要 Actions 写权限的令牌">
+    </div>
+    <div class="row">
+      <label>每天</label>
+      <input id="cronHour" type="number" min="0" max="23" value="9">
+      <label>:</label>
+      <input id="cronMinute" type="number" min="0" max="59" value="0">
+      <label>时区</label>
+      <input id="cronTz" type="text" value="Asia/Shanghai" spellcheck="false">
+    </div>
+
+    <div class="row">
+      <button id="cronBtn" class="primary" type="button">⏰ 创建 / 更新定时任务</button>
+      <button id="cronListBtn" type="button">查看已有任务</button>
+    </div>
+    <div id="cronResult" class="status"></div>
+  </section>
+
   <footer>
     <span>全部在本机浏览器里完成，不会发往任何第三方。</span>
     <span id="coreVersion"></span>
@@ -105,10 +169,12 @@
   <script src="../lib/verify.js"></script>
   <script src="../lib/access-token.js"></script>
   <script src="../lib/collect.js"></script>
+  <script src="../lib/cronjob.js"></script>
   <script src="popup.js"></script>
   <script src="panel-extract.js"></script>
   <script src="extract-actions.js"></script>
   <script src="panel-sites.js"></script>
   <script src="panel-sites-fill.js"></script>
+  <script src="panel-cron.js"></script>
 </body>
 </html>

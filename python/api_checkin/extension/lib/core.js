@@ -95,6 +95,8 @@ function buildSites(accounts) {
     entry[account.kind] = account.secret;
     if (account.userId) entry.user_id = account.userId;
     if (account.label) entry.label = account.label;
+    // 探测出来的签到入口：写进 JSON 后 index.py 直接请求它，不再逐个回退试错
+    if (account.checkinPath) entry.checkin_path = account.checkinPath;
 
     const bucket = account.kind + "s";
     if (!buckets[bucket]) buckets[bucket] = [];

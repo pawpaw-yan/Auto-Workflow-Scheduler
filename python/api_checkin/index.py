@@ -179,6 +179,9 @@ class Account:
     kind: str            # cookie / token
     secret: str          # 凭证本身
     user_id: str = ""    # 可选。token 鉴权时部分接口要求带 New-Api-User
+    # 可选。签到接口路径（JSON 配置的 `checkin_path` 字段，浏览器扩展会把它探测出来写进来）。
+    # 给了就直接请求它、**不再逐个回退探测** —— 站点形态已经确定，没必要再试错。
+    checkin_path: str = ""
 
     @property
     def display(self) -> str:
@@ -295,6 +298,7 @@ def _account_from_json(
     """
     label = ""
     user_id = ""
+    checkin_path = ""
 
     if isinstance(entry, str):
         if force_kind:
@@ -309,6 +313,7 @@ def _account_from_json(
     elif isinstance(entry, dict):
         label = str(entry.get("label") or "")
         user_id = str(entry.get("user_id") or "")
+        checkin_path = str(entry.get("checkin_path") or "").strip()
         if entry.get("token"):
             kind, secret = AUTH_TOKEN, str(entry["token"]).strip()
         elif entry.get("cookie"):
@@ -327,8 +332,18 @@ def _account_from_json(
     if not secret:
         raise ConfigError(f"{where}：凭证为空")
 
+    if checkin_path and not checkin_path.startswith("/"):
+        raise ConfigError(
+            f"{where}：`checkin_path` 要以 / 开头（如 /api/checkin），当前是 '{checkin_path}'"
+        )
+
     return Account(
-        site=site, label=label or f"#{index}", kind=kind, secret=secret, user_id=user_id
+        site=site,
+        label=label or f"#{index}",
+        kind=kind,
+        secret=secret,
+        user_id=user_id,
+        checkin_path=checkin_path,
     )
 
 
@@ -642,7 +657,8 @@ class SiteClient:
         self.session = requests.Session()
         self.session.headers.update(self._build_headers())
         self._v1_tried = False      # v1.x auth/refresh 自举每账号只试一次
-        self._checkin_path = None   # 探测成功的签到路径（跨请求复用）
+        # 配置里显式给了 checkin_path 就直接用它、一次探测都不做；没给才逐个回退试。
+        self._checkin_path = self.account.checkin_path or None
         # Cookie 放进会话的 cookie 罐而不是 Cookie 头：requests 在罐里有 cookie 时
         # 会用罐里的内容整个覆盖 Cookie 头 —— 下面过 WAF 挑战要往罐里种
         # acw_sc__v2，静态会话要是还在头里就会被这一下冲掉。
@@ -828,8 +844,11 @@ class SiteClient:
 
     def checkin(self) -> Tuple[bool, str, object]:
         """执行签到，返回 (是否成功, 服务端消息, 原始 data)。
-        标准 new-api 是 /api/user/checkin；部分定制 fork 把它挪到了 /api/checkin ——
-        404 时自动回退，成功的路径记在会话里避免重复试错。
+
+        配置里给了 `checkin_path` 就**只请求它**（浏览器扩展已经把入口探测出来了，
+        不需要再试错），404 直接报出来让你改配置，不做回退。
+        没给才按 `/api/user/checkin` → `/api/checkin` → `/api/user/sign_in` 的顺序回退，
+        成功的路径记在会话里避免重复试错。
         签到接口若要求 PoW（v1.x 部分部署），自动取挑战、求解后带查询参数重试一次。"""
         paths = [self._checkin_path] if self._checkin_path else [CHECKIN_PATH, *CHECKIN_FALLBACK_PATHS]
         last_error: Optional[RequestError] = None
@@ -871,6 +890,13 @@ class SiteClient:
             if not success and re.search(r"turnstile|人机验证|验证码", message, re.I):
                 message += "（该站签到启用了 Turnstile 人机验证 —— 脚本无法自动签到，请在浏览器手动完成）"
             return success, message, body.get("data")
+
+        if self.account.checkin_path:
+            # 入口是显式配置的，没有回退可言 —— 说清楚是哪一段出问题
+            raise RequestError(
+                f"配置的签到入口 {self.account.checkin_path} 返回 404 —— "
+                "这个路径不对。删掉配置里的 checkin_path 可回到自动探测"
+            )
         raise NoCheckinApi("该站未提供签到接口（可能为进站自动签到），已跳过")
 
 
