@@ -41,7 +41,7 @@
 | `lib/core.js` | 转换核心（校验口径与 `../index.py` 的 `parse_sites()` 一致） |
 | `lib/site-api.js` | 站点 API 调用（自动带全部 cookie，过 WAF 的关键）+ 读 cookie |
 | `lib/site-storage.js` | 注入站点标签页读 localStorage（用户 ID 的兜底） |
-| `lib/verify.js` | 两级令牌验证（严格模式 → 被 WAF 拦才带 cookie 重试） |
+| `lib/verify.js` | 令牌验证：严格一次（`credentials:"omit"`，不带会话 cookie），没过就是没过 |
 | `lib/access-token.js` | 访问令牌的三级来源，全程真验证 |
 | `lib/collect.js` | 单站点提取主流程（每步失败都记进 errors，不丢已拿到的值） |
 | `popup/` | 面板 UI（工具栏图标与页面内按钮共用同一份） |

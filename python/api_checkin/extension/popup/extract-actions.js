@@ -18,9 +18,9 @@ async function runTokenTest() {
 }
 
 async function runCookieTest() {
-  // v1.x 站（new_api_refresh cookie 是标志）：接口不认 cookie，cookie 测试的真实含义
-  // 是「刷新令牌能不能换出新的访问令牌」—— 直接走一次自举来验证
-  if ((extractState && extractState.v1x) || /(^|;\s*)new_api_refresh=/.test(byId("cookieField").value)) {
+  // v1.x 站（名字带 refresh 的 cookie 是标志，各 fork 命名不一）：接口不认 cookie，
+  // cookie 测试的真实含义是「刷新令牌能不能换出新的访问令牌」—— 直接走一次自举来验证
+  if ((extractState && extractState.v1x) || /(^|;\s*)[^=]*refresh=[^;]/.test(byId("cookieField").value)) {
     const site = normSite();
     setStatus("testResult", "正在用刷新令牌自举（在站点标签页内发请求）…");
     const boot = await bootstrapV1Auth(site);

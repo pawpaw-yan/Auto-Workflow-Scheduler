@@ -5,9 +5,14 @@
 
 "use strict";
 
+/** 错误文本像不像「凭证不被接受」—— v1.x 站用 cookie 调管理接口必然是这类报文 */
+function isAuthFailure(text) {
+  return /HTTP 401|HTTP 403|AUTH_UNAUTHORIZED|access token|unauthorized|未登录|请先登录|无效/i.test(text || "");
+}
+
 async function collectSite(site, manualUserId) {
   const result = {
-    site: site, userId: "", me: null,
+    site: site, userId: "", me: null, siteType: "",
     cookie: "", cookieNames: [], cookieCount: 0, sessionValid: false,
     accessToken: "", accessTokenSource: "", accessTokenNote: "",
     testDetail: null, testLoose: false, errors: [], v1x: false,
@@ -22,19 +27,21 @@ async function collectSite(site, manualUserId) {
 
   // 2. 用户 ID：手填 → 站点 localStorage（注入）→ new-api v1.x 自举
   let userId = String(manualUserId || "").trim();
-  // new_api_refresh 是 v1.x 的标志 cookie —— 它在就必须走自举（v1.x 接口不认 cookie，
-  // 哪怕 ID 是手填的，标准会话检查也必然 401 "access token 无效"）
-  const hasV1Refresh = result.cookieNames.indexOf("new_api_refresh") !== -1;
+  // 名字里带 refresh 的 cookie 是 v1.x 的标志（各 fork 命名不一，不写死 new_api_refresh）——
+  // 它在就必须走自举（v1.x 接口不认 cookie，哪怕 ID 是手填的，标准会话检查也必然 401）
+  const hasV1Refresh = result.cookieNames.some((n) => /refresh/i.test(n));
   let bundle = null;
+  let triedBoot = false;
   if (!userId) {
     const cached = await readSiteLocalStorage(site);
     if (cached && cached.id) userId = cached.id;
   }
   if (hasV1Refresh || !userId) {
+    triedBoot = true;
     const boot = await bootstrapV1Auth(site);
     if (boot && boot.ok) {
       bundle = { user: boot.user, access_token: boot.access_token || "" };
-      userId = String(boot.user.id);
+      if (boot.user && boot.user.id) userId = String(boot.user.id);
       result.v1x = true;
       result.siteType = "v1x";
     } else if (boot && boot.reason) {
@@ -69,6 +76,24 @@ async function collectSite(site, manualUserId) {
     } catch (e) {
       result.errors.push("读 /api/user/self 失败：" + e.message);
     }
+    // 会话没过、且还没试过自举 —— 刷新 cookie 名字里不带 refresh 的 v1.x 站会走到这里，
+    // 表现就是「打开面板直接 401」。补一次自举，换出 Bearer 令牌再往下走。
+    if (!result.me && !triedBoot && isAuthFailure(result.errors.join(" "))) {
+      triedBoot = true;
+      const boot = await bootstrapV1Auth(site);
+      if (boot && boot.ok) {
+        bundle = { user: boot.user, access_token: boot.access_token || "" };
+        if (boot.user && boot.user.id) result.userId = String(boot.user.id);
+        result.me = bundle.user;
+        result.sessionValid = true;
+        result.v1x = true;
+        result.siteType = "v1x";
+        result.errors.push("该站是 new-api v1.x：已改用自举换出的令牌，请按 token 方式配置");
+      } else if (boot && boot.reason && !/HTTP 404/.test(boot.reason)) {
+        // 自举端点 404 = 这就是个 v0.x 站，不用把这条噪音报告给用户
+        result.errors.push("v1.x 自举也没过：" + boot.reason);
+      }
+    }
   }
   if (!result.me) return result;
 
@@ -87,7 +112,13 @@ async function collectSite(site, manualUserId) {
   }
   if (!resolved) {
     const r = await resolveAccessToken(site, result.me, result.userId);
-    if (r.token) resolved = r;
+    if (r.token) {
+      resolved = r;
+    } else if (r.note) {
+      // 「为什么没读到访问令牌」—— 兜底链给的原因别丢，面板要显示
+      result.accessTokenNote = r.note;
+      result.errors.push(r.note);
+    }
   }
   if (!resolved && temp) {
     const v = await tryVerify(temp, result.userId, site);

@@ -164,9 +164,15 @@ async function readCookies(site) {
 /** new-api v1.x 自举：POST /api/user/auth/refresh 换 { access_token, user, session }。
     该端点校验 Origin（CSRF 防护）—— 从扩展页发会被 403 AUTH_ORIGIN_FORBIDDEN 拒掉，
     所以把请求注进该站**已打开的标签页**里执行（同源 Origin、同 cookie 罐、同 CF 放行状态）。
-    返回 { ok: true, user, access_token } 或 { ok: false, reason }；v0.x 站静默 ok:false。 */
+    返回 { ok: true, user, access_token } 或 { ok: false, reason }；v0.x 站静默 ok:false。
+
+    只要换出了 access_token 就算成功 —— 用户 ID 优先取响应的 user，取不到再从令牌的
+    JWT payload 里读，都没有也照样返回（ID 可以由手填 / localStorage 补），
+    免得「换到了令牌却因为没解析出 ID 而整体判失败」。 */
 async function bootstrapV1Auth(site) {
-  const origin = site.replace(/\/+$/, "");
+  // 站点串可能带路径（https://x.com/sub）—— 标签页匹配只能用 origin，先归一
+  let origin = String(site || "").replace(/\/+$/, "");
+  try { origin = new URL(origin).origin; } catch (e) { /* 解析不了就按原样试 */ }
   let tabs = [];
   let lastReason = "";
   try {
@@ -182,6 +188,19 @@ async function bootstrapV1Auth(site) {
       const [res] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: async () => {
+          // 注进页面里执行，不能引用扩展侧的函数 —— 需要的工具全部内联
+          const payloadOf = (tok) => {
+            try {
+              const seg = String(tok || "").split(".")[1];
+              if (!seg) return {};
+              const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+              const json = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+              const o = JSON.parse(json);
+              return o && typeof o === "object" ? o : {};
+            } catch (e) {
+              return {};
+            }
+          };
           try {
             const res = await fetch("/api/user/auth/refresh", {
               method: "POST",
@@ -190,13 +209,13 @@ async function bootstrapV1Auth(site) {
             });
             const data = await res.json().catch(() => null);
             const d = data && data.data;
-            if (res.ok && data && data.success === true && d && d.user && d.user.id) {
-              return {
-                ok: true,
-                id: String(d.user.id),
-                username: String(d.user.username || ""),
-                access_token: String(d.access_token || ""),
-              };
+            const token = String((d && (d.access_token || d.token)) || "");
+            if (res.ok && data && data.success === true && d && token) {
+              const p = payloadOf(token);
+              const u = d.user || {};
+              const id = String(u.id || u.user_id || d.user_id || d.id || p.id || p.user_id || p.sub || "");
+              const username = String(u.username || u.name || d.username || p.username || p.name || "");
+              return { ok: true, id: id, username: username, access_token: token };
             }
             return { ok: false, reason: "HTTP " + res.status + " " + ((data && data.message) || "") };
           } catch (e) {
