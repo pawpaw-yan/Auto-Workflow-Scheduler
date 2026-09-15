@@ -146,6 +146,13 @@ fi
 count=$(printf '%s\n' "$applied" | grep -c .)
 names=$(printf '%s' "$applied" | tr '\n' ' ')
 
+# 告诉后续业务脚本「本次被覆盖了哪些项」（只列名字，不含值）。
+# 例如 api_checkin 会据此判断 SITES 是不是来自 ref，从而在日志里提醒
+# 「workflow_dispatch 的 inputs 不是机密，公开仓库等于公开」。
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'OVERRIDE_APPLIED=%s\n' "$names" >> "$GITHUB_ENV"
+fi
+
 echo "::notice::本次运行通过 ref 传入参数替换了 ${count} 项配置：${names}"
 
 # 写进 Job Summary：只列名称，不列值。
