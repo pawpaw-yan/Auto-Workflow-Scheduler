@@ -15,12 +15,23 @@ function setStatus(id, message, bad) {
 /** 复制到剪贴板，按钮短暂显示结果 */
 async function copyText(text, button) {
   const original = button.textContent;
+  let done = false;
   try {
     await navigator.clipboard.writeText(text);
-    button.textContent = "已复制";
-  } catch (e) {
-    button.textContent = "复制失败";
+    done = true;
+  } catch (e) { /* iframe 里 Permissions-Policy 会拦 Clipboard API，走兜底 */ }
+  if (!done) {
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.cssText = "position:fixed;top:-999px;left:-999px;opacity:0;";
+      document.body.appendChild(area);
+      area.select();
+      done = document.execCommand("copy");
+      area.remove();
+    } catch (e) { done = false; }
   }
+  button.textContent = done ? "已复制" : "复制失败";
   setTimeout(() => { button.textContent = original; }, 1500);
 }
 
