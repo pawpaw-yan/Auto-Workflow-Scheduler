@@ -1,8 +1,28 @@
 # oracle-abc
 
-抢占 OCI（Oracle Cloud）Ampere A1 实例，抢到后自动停止并升级规格。
+抢占 OCI（Oracle Cloud）Ampere A1 免费实例，抢到后自动停止并升级规格。
 
-**流程**：先抢一台小规格（默认 `1 OCPU / 6 GB`）的 A1；抢到后**分步升级**——每轮把规格放大 `STEP_FACTOR` 倍（默认 ×2），升完立刻重新判断，直到达到目标 `TARGET`。
+> **本文件只讲这个项目自己的东西** —— OCI 怎么配、抢购策略、专属的坑。
+>
+> 通用机制（项目结构、配置三层优先级、怎么触发、参数覆盖、`.env`、摘要与配置自检、本地运行）
+> 全部写在[仓库根 README](../../README.md) 里，这里不重复。
+
+| | |
+|---|---|
+| 对应 workflow | `.github/workflows/oracle-abc.yml` |
+| 对应 Environment | `python_oracle_abc` |
+| 入口脚本 | `python/oracle-abc/index.py` |
+| 建议调度频率 | 每 1~5 分钟 |
+
+---
+
+## 这个项目做什么
+
+A1 常年缺货，**申请的规格越小越容易命中容量**。所以策略是：
+
+1. 先抢一台小规格（默认 `1 OCPU / 6 GB`）
+2. 抢到后**分步升级** —— 每轮把规格放大 `STEP_FACTOR` 倍（默认 ×2）
+3. 每升完一轮**立刻重新判断**，直到达到目标 `TARGET`
 
 默认升级路径：
 
@@ -10,33 +30,8 @@
 1c6g  →  2c12g  →  4c24g          （跳过 3c18g）
 ```
 
-**为什么先抢小的**：A1 常年缺货，申请的规格越小越容易命中容量；抢到后再一路升上去。
-
-**为什么分步而不是一次跳到位**：每一步都有独立的成功机会。直接跳到大规格如果失败，前面的努力就白费了；分步升则至少能停在某个已经成功的规格上。
-
----
-
-## 目录结构
-
-```
-python/
-├── requirements.txt        # 语言级公共依赖
-├── common/                 # 语言级共享代码包
-│   ├── __init__.py
-│   └── logging_config.py   #   日志初始化（所有 Python 项目共用）
-└── oracle-abc/
-    ├── index.py            # 入口脚本
-    ├── requirements.txt    # oci（OCI Python SDK）
-    └── README.md
-```
-
-> `python/common/` 是 **Python 语言级共享代码包**，与仓库根的 `common/`（跨语言 shell 脚本）对称。
-> 项目脚本位于 `python/<项目>/`，比包根 `python/` 深一层，因此 `index.py` 开头会先把 `python/`
-> 加入 `sys.path`，再用 `from common.logging_config import init_logger` 引用——
-> 这样无论从仓库根目录还是项目目录启动都能解析。
-
-对应 workflow：`.github/workflows/oracle-abc.yml`
-对应 Environment：`python_oracle_abc`
+**为什么分步而不是一次跳到位**：每一步都有独立的成功机会。
+直接跳到大规格如果失败，前面的努力就白费了；分步升则至少能停在某个已经成功的规格上。
 
 ---
 
@@ -57,6 +52,10 @@ python/
 
 ## 配置
 
+> 三层优先级规则、什么该放 Secret 什么该放 Variable、Environment 怎么建，
+> 见[根 README「配置体系」](../../README.md#6-配置体系通用)。
+> 这里只列**名称和怎么拿**。
+
 ### Environment secret
 
 在 **Settings → Environments → `python_oracle_abc` → Environment secrets** 中添加：
@@ -66,6 +65,9 @@ python/
 | `OCI_CLI_KEY_CONTENT` | ✅ | OCI API 私钥的**完整内容**（PEM 全文，含 `-----BEGIN PRIVATE KEY-----` 和结尾行） |
 
 > 这是**唯一**的真凭据。其余都是 OCID / 标识符，单独泄露无法用于认证。
+
+> 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，
+> 并在 `oracle-abc.yml` 里取消对应那行的注释。**私钥未加密时不要设置这个值**，否则会干扰解析。
 
 ### Environment variables
 
@@ -78,139 +80,82 @@ python/
 | `OCI_CLI_TENANCY` | ✅ | 控制台 → **Tenancy** 页 → OCID |
 | `OCI_CLI_REGION` | ✅ | 区域标识，如 `ap-singapore-1`、`ap-tokyo-1` |
 | `OCI_COMPARTMENT_ID` | ✅ | Identity → **Compartments** → 选中隔间 → OCID |
-| `OCI_AVAILABILITY_DOMAIN` | ✅ | 如 `ocid1.availabilitydomain.oc1..xxx` 或 `xxxx:AP-SINGAPORE-1-AD-1` |
-| `OCI_SUBNET_ID` | ✅ | Networking → VCN → 子网 → OCID（仅创建实例时需要） |
-| `OCI_IMAGE_ID` | ✅ | 见下方「如何拿镜像 OCID」（仅创建实例时需要） |
+| `OCI_AVAILABILITY_DOMAIN` | ✅ | 见下方「可用域怎么拿」 |
+| `OCI_SUBNET_ID` | ✅ | Networking → VCN → 子网 → OCID（**仅创建实例时需要**） |
+| `OCI_IMAGE_ID` | ✅ | 见下方「镜像 OCID 怎么拿」（**仅创建实例时需要**） |
 | `OCI_INSTANCE_NAME` | 选填 | 默认 `oracle-abc`。查找和创建都用这个 display-name |
 | `OCI_SSH_PUBLIC_KEY` | ✅ | SSH 公钥**全文**（`~/.ssh/id_ed25519.pub` 的内容，可多行）。创建时注入；**不填实例建出来无法登录** |
 
-另外还有三个控制「抢占 + 升级」的参数 `OCPU` / `MEMORY` / `TARGET`，同样放在这个 Environment 下，详见下方「可调参数」。
+另外还有三个控制「抢占 + 升级」的参数 `OCPU` / `MEMORY` / `TARGET`，同样放在这个 Environment 下，
+详见下方[「可调参数」](#可调参数)。
 
-> 如果私钥带口令加密，需要额外加一个 secret `OCI_CLI_PASSPHRASE`，并在 `oracle-abc.yml` 里取消对应那行的注释。**私钥未加密时不要设置这个值**，否则会干扰解析。
+### 可用域怎么拿（`OCI_AVAILABILITY_DOMAIN`）
 
-### 仓库级 secret
+**不能直接填 `AP-SINGAPORE-1-AD-1`。** OCI 的可用域名字带一个**该租户特有的随机前缀**，
+形如 `xxxx:AP-SINGAPORE-1-AD-1`，猜不出来，必须查。
 
-本项目还会用到一项**仓库级**配置（所有项目共用），在 **Settings → Secrets and variables → Actions → Secrets** 中添加（不要放进 Environment）：
+**最省事的办法：用控制台自带的 Cloud Shell**（不用装任何东西）：
 
-| 名称 | 必填 | 说明 |
-|---|---|---|
-| `COMMON_FINGERPRINT_KEY` | 选填 | 供 `common/check-secrets.sh` 生成 HMAC 指纹，自身绝不打印。不填则该列显示 `(skip: no key)` |
+1. 登录 OCI 控制台，右上角找到终端图标 `>_`（**Developer Tools → Cloud Shell**）
+2. 点开，直接粘贴：
 
-任意长随机字符串即可，生成方式（PowerShell）：
+   ```bash
+   oci iam availability-domain list \
+     --compartment-id <你的 tenancy OCID> \
+     --query 'data[].{name:name, id:id}' --output table
+   ```
 
-```powershell
-(New-Guid).ToString('N') + (New-Guid).ToString('N')
-```
+   返回里的 `name` 就是可以直接填的值。
 
-### 配置自检与调试开关
+**或者纯网页操作**：
 
-> **自检默认不执行**——这一步会整体跳过，日志里连表都没有。
-> 只有打开下面的调试开关后它才会跑，并输出实际值用于排查。
+- `Compute → Instances → Create instance`，滚到 **Placement / 放置** 一栏，
+  **Availability domain 下拉**里显示的就是（**注意带冒号前面的前缀**）
+- 已有实例的话更准：进实例详情页 → **Instance information** → `Availability domain` 字段，
+  这里显示的就是 OCI 真正认的那个完整字符串
 
-打开开关后，`common/check-secrets.sh` 会输出这样一张表（同时写入 Job Summary）：
+### 镜像 OCID 怎么拿（`OCI_IMAGE_ID`）
 
-```
-配置自检（调试模式已开启：DEBUG_MODE=true）
-Environment : python_oracle_abc
-
-NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
------------------------- --------- ------- --------- --------------------
-OCI_CLI_KEY_CONTENT      secret    no      1674      a1b2c3d4e5f6
-OCI_SUBNET_ID            variable  no      92        ocid1.subnet.oc1.ap-tokyo-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaa...（已截断）
-```
-
-| 类型 | 展示内容 | 说明 |
-|---|---|---|
-| `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见，指纹可跨环境 / 跨运行比对，且没有密钥无法离线爆破。**无论任何开关都不会打印明文** |
-| `variable` | 明文值（超 60 字符自动截断） | 既然是主动开开关来排查，就直接给值；`LENGTH` 列保留完整长度 |
-| 未开开关 | **什么都不输出** | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，所以默认连表都不打 |
-
-**要用它，打开调试开关后重跑一次，用完关掉：**
-
-| 开关 | 配在哪 | 作用范围 |
-|---|---|---|
-| `DEBUG_MODE` | **Environment `python_oracle_abc` → Variables** | **只影响本项目** |
-| `COMMON_DEBUG_MODE` | **仓库级 Variables**（Settings → Secrets and variables → Actions → Variables） | 影响所有项目 |
-
-判定规则：
-
-- 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；其余值一律视为关闭
-- **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），因此可以用 `DEBUG_MODE=false` 单独关掉某个已全局开启的环境
-- 两者都未设 / 非真值 → **整步跳过**（fail-closed）
-
-> ⚠️ **开关靠 workflow 的 `env:` 桥接才生效**——脚本只认进程环境变量：
-> ```yaml
-> DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
-> COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
-> ```
->
-> **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
->
-> ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。它只决定「要不要把它们写进公开日志」。
-
-**排查 `401` 时怎么用**：先只看 `OCI_CLI_KEY_CONTENT` 的 `LENGTH` 是否为 0（够判断「私钥有没有配上」）；要确认 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 有没有填反，再开 `DEBUG_MODE` 看明文。
-
-### 如何拿镜像 OCID
-
-任选其一：
-
-**控制台**：Create Instance 页面选好镜像，页面底部会显示对应的 OCID。
-
-**OCI CLI**（本机或 Cloud Shell）：
+**同样推荐用控制台自带的 Cloud Shell**：
 
 ```bash
+# Oracle Linux（A1 是 ARM，必须带 --shape 过滤，否则会选到 x86 镜像）
 oci compute image list \
   --compartment-id <你的 tenancy OCID> \
-  --operating-system "Canonical Ubuntu" \
+  --operating-system "Oracle Linux" \
+  --shape VM.Standard.A1.Flex \
   --sort-by TIMECREATED --sort-order DESC \
   --query 'data[0].id' --raw-output
 ```
 
-**Python SDK**：
+想先看清楚有哪些版本，就把 `data[0].id` 换成一张表：
 
-```python
-import oci
-config = oci.config.from_file()
-data = oci.core.ComputeClient(config).list_images(
-    compartment_id="<tenancy OCID>",
-    operating_system="Canonical Ubuntu",
-    sort_by="TIMECREATED",
-    sort_order="DESC",
-).data
-print(data[0].id)
+```bash
+oci compute image list \
+  --compartment-id <你的 tenancy OCID> \
+  --operating-system "Oracle Linux" \
+  --shape VM.Standard.A1.Flex \
+  --sort-by TIMECREATED --sort-order DESC \
+  --query 'data[0:10].{name:"display-name", ver:"operating-system-version", created:"time-created"}' \
+  --output table
 ```
 
----
+想锁死主版本，加 `--operating-system-version "9"`（值以列表里 `ver` 列为准）。
 
-## 触发方式
+**或者纯网页操作**：
 
-### 1. 通过总入口（推荐）
+1. `Compute → Instances → Create instance`
+2. **先选 Shape**：`Ampere → VM.Standard.A1.Flex`（控制台的镜像列表会按已选 shape 自动过滤架构）
+3. 再点 **Change image**，选 **Oracle Linux** 和版本
+4. 选完后镜像名字是个链接，点进去 → 详情页的 **OCID** 行点复制
 
-```
-POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/run-project.yml/dispatches
-Authorization: Bearer <PAT>
-Content-Type: application/json
+### 三个必须一致的约束（最容易踩的坑）
 
-{"ref":"main","inputs":{"project":"oracle-abc"}}
-```
-
-### 2. 直达本项目
-
-```
-POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/oracle-abc.yml/dispatches
-Authorization: Bearer <PAT>
-Content-Type: application/json
-
-{"ref":"main"}
-```
-
-### 3. Actions 页面手动
-
-**Actions** → **oracle-abc** → **Run workflow**
-
-### 建议的调度方式
-
-用外部调度器（cron-job.org 等）**每 5 分钟**打一次上面的 URL。因为 A1 缺货是常态，单次抢不到很正常，靠高频重试提高命中率——**不要**指望 GitHub 自带的 cron，实测极不可靠。
+| 约束 | 说明 |
+|---|---|
+| 区域一致 | AD 前缀里的区域（`AP-SINGAPORE-1-AD-1`）必须和 `OCI_CLI_REGION`（`ap-singapore-1`）同区 |
+| **架构一致** | `VM.Standard.A1.Flex` 是 **ARM (aarch64)**，镜像必须是 ARM 版；选成 x86 会报 shape 不兼容 |
+| 隔间归属 | 实例建在 `OCI_COMPARTMENT_ID` 指定的隔间里，子网必须在该隔间可见 |
 
 ---
 
@@ -242,14 +187,17 @@ Content-Type: application/json
 | 2 | 2c | **4c** | 24 GB |
 | 3 | 4c | — | 已达 TARGET，结束 |
 
-**跳过 `3c18g` 的原因**：每轮的目标是 `当前 × STEP_FACTOR`，超过 `TARGET` 就压到 `TARGET`，所以不会落在中间档位上。
+**跳过 `3c18g` 的原因**：每轮的目标是 `当前 × STEP_FACTOR`，超过 `TARGET` 就压到 `TARGET`，
+所以不会落在中间档位上。
 
 > 把 `STEP_FACTOR` 设为 `1` 就退化成逐级 +1（1→2→3→4）。
 > 若 `TARGET=3`，则路径为 1→2→3（`2 × 2 = 4` 超过 3，被压到 3）。
 >
 > 内存按 `MEMORY / OCPU` 的比例自动跟随（上例为每 OCPU 6 GB），可用 `MEMORY_PER_OCPU` 显式覆盖。
 
-**幂等性**：脚本可以无脑反复执行。
+### 幂等性
+
+脚本可以无脑反复执行，调度器一直打着也不会产生副作用：
 
 | 当前状态 | 行为 |
 |---|---|
@@ -258,9 +206,8 @@ Content-Type: application/json
 | 已经达到 TARGET | **什么都不做**，直接退出 0 |
 | 中间某轮是 STOPPED | 跳过停止，直接升级并启动 |
 
-调度器可以一直打着，不会产生副作用。
-
-**防死循环**：如果某一轮「调用成功返回但规格实际没变」（比如被平台限制），轮数上限会兜住并报错中止。上限为 `TARGET - OCPU + 2`（至少 3）。
+**防死循环**：如果某一轮「调用成功返回但规格实际没变」（比如被平台限制），
+轮数上限会兜住并报错中止。上限为 `TARGET - OCPU + 2`（至少 3）。
 
 ---
 
@@ -273,15 +220,17 @@ Content-Type: application/json
 | `0` | 已经是目标规格 | 无需操作 |
 | `1` | 缺配置 / 认证失败 / OCI 调用异常 / 等待超时 | 需要处理 |
 
-> 如果你希望在「没抢到」时也变红（比如配合告警），把 `index.py` 里 `try_launch()` 中那段 `warn(...)` 改成 `die(...)` 即可。
+> 如果你希望在「没抢到」时也变红（比如配合告警），把 `index.py` 里 `try_launch()` 中那段
+> `warn(...)` 改成 `die(...)` 即可。
 >
 > 注意：脚本对**任何未预期异常**都会 `sys.exit(1)`，不会出现「任务实际失败但 workflow 显示绿色」的情况。
+> 这点和 `glados_checkin` 不同。
 
 ---
 
 ## 可调参数
 
-### 三个主参数（GitHub Variables）
+### 三个主参数
 
 | GitHub Variable | 脚本变量 | 默认 | 说明 |
 |---|---|---|---|
@@ -293,7 +242,7 @@ Content-Type: application/json
 
 | GitHub Variable | 脚本变量 | 默认 | 说明 |
 |---|---|---|---|
-| `STEP_FACTOR` | `STEP_FACTOR` | `2` | 每轮放大倍数。`2` = 翻倍（1c→2c→4c），`1` = 逐级 +1（1c→2c→3c→4c） |
+| `STEP_FACTOR` | `STEP_FACTOR` | `2` | 每轮放大倍数。`2` = 翻倍（1c→2c→4c），`1` = 逐级 +1 |
 | `MEMORY_PER_OCPU` | `MEMORY_PER_OCPU` | `MEMORY / OCPU` | 每个 OCPU 配多少 GB 内存 |
 | — | `OCI_SHAPE` | `VM.Standard.A1.Flex` | 目标 shape |
 | — | `OCI_BOOT_VOLUME_GB` | `50` | 引导卷大小 |
@@ -302,9 +251,30 @@ Content-Type: application/json
 > Oracle Always Free 的 Ampere A1 额度是 **4 OCPU / 24 GB**（以官方为准）。
 > 所以 `OCPU=1`、`MEMORY=6`、`TARGET=4` 时，最终会升到 `4c24g`，正好用满免费额度。
 
+### ⚠️ 变量名有两套，别搞混
+
+**GitHub Variable 名 ≠ 脚本读取的变量名。** `OCPU` / `MEMORY` / `TARGET` 只是 GitHub 界面上的显示名，
+workflow 的 `env:` 里已经把三者映射成了脚本实际读取的 `GRAB_OCPUS` / `GRAB_MEMORY_GB` / `TARGET_OCPUS`。
+
+这会影响两个地方，写错都**不会报错、只会静默失效**：
+
+| 场景 | 该写哪个 |
+|---|---|
+| `.env` 文件 | 脚本变量名（`GRAB_OCPUS`），不是 `OCPU` |
+| 参数覆盖 `inputs.overrides` 的键 | 脚本变量名（`{"TARGET_OCPUS":"4"}`），不是 `TARGET` |
+
+> 写错的现象是「覆盖明明没报错，但行为没变」。完整对应关系见
+> `python/oracle-abc/.env.example` 里的注释。
+
+参数覆盖的完整说明（白名单、值不回显、摘要提示等）见
+[根 README「参数覆盖」](../../README.md#64-参数覆盖临时替换一次配置)。
+
 ---
 
 ## 常见问题
+
+> 通用问题（变量没生效、Summary 是空的、调度器没触发……）见
+> [根 README「常见问题（通用）」](../../README.md#11-常见问题通用)。下面是本项目专属的。
 
 ### `NotAuthorizedOrNotFound` / `401`
 
@@ -313,9 +283,11 @@ Content-Type: application/json
 1. `OCI_CLI_KEY_CONTENT` 是否是**私钥全文**（不是公钥、不是指纹）
 2. `OCI_CLI_FINGERPRINT` 是否和该私钥配对（在 OCI 控制台 My profile → API keys 里核对）
 3. `OCI_CLI_USER` / `OCI_CLI_TENANCY` 是否填反了
-4. 打开 `DEBUG_MODE` 后重跑（见上方「配置自检与调试开关」），看自检表：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上；同时能直接看到 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 的实际值，确认有没有填反
+4. 打开 `DEBUG_MODE` 后重跑，看自检表：`OCI_CLI_KEY_CONTENT` 的 `LENGTH` 为 0 就是没配上；
+   同时能直接看到 `OCI_CLI_USER` / `OCI_CLI_TENANCY` 的实际值，确认有没有填反
 
-> 报错信息形如 `OCI 调用失败：[401] NotAuthenticated — ...`，`[403] NotAuthorizedOrNotFound` 通常是权限或 OCID 填错。
+> 报错信息形如 `OCI 调用失败：[401] NotAuthenticated — ...`，
+> `[403] NotAuthorizedOrNotFound` 通常是权限或 OCID 填错。
 
 ### `Out of host capacity` / 一直抢不到
 
@@ -325,7 +297,9 @@ Content-Type: application/json
 - **提高触发频率**（外部调度器 1~5 分钟一次）
 - **换可用域**（`OCI_AVAILABILITY_DOMAIN` 试其他 AD）
 
-> A1 缺货时 OCI 返回的形态不统一：有的区域是 500 `InternalError` + "Out of host capacity."，有的区域 code 直接是 `OutOfHostCapacity`。`is_capacity_error()` 已同时覆盖这几种，所以不必担心被误判为失败。
+> A1 缺货时 OCI 返回的形态不统一：有的区域是 500 `InternalError` + "Out of host capacity."，
+> 有的区域 code 直接是 `OutOfHostCapacity`。`is_capacity_error()` 已同时覆盖这几种，
+> 所以不必担心被误判为失败。
 
 ### 升级时 `LimitExceeded`
 
@@ -333,9 +307,29 @@ Content-Type: application/json
 
 ### 升级后启动失败
 
-停止再启动的过程中，实例可能重新遇到容量问题。想规避这一点，可以改成**不主动停止**、直接 `update_instance`——据 Oracle 文档，运行时改 shape 会由平台自动重启实例；代价是可能触发非优雅关机，有数据损坏风险（这也是默认走 `SOFTSTOP` 的原因）。
+停止再启动的过程中，实例可能重新遇到容量问题。想规避这一点，可以改成**不主动停止**、
+直接 `update_instance` —— 据 Oracle 文档，运行时改 shape 会由平台自动重启实例；
+代价是可能触发非优雅关机，有数据损坏风险（这也是默认走 `SOFTSTOP` 的原因）。
 
-### 脚本在本地怎么跑
+### 其实可以不填镜像 / 可用域 / 子网
+
+`index.py` 第一步是「按 display-name 找实例」，找到了就直接跳过创建。
+所以如果你**能在控制台手动建出一台**名字叫 `oracle-abc`（要和 `OCI_INSTANCE_NAME` 一致）的实例，
+脚本接管后只会做「停止 → 改规格 → 启动」的升级，`OCI_AVAILABILITY_DOMAIN` / `OCI_IMAGE_ID` /
+`OCI_SUBNET_ID` 一个都用不上。
+
+前提是**手动创建能成功** —— A1 缺货时手动建往往也报 `Out of host capacity`。
+真抢不到还是得让脚本去高频重试，那时这几项就必须填对。
+
+### 本地怎么跑
+
+```bash
+pip install -r python/oracle-abc/requirements.txt
+cd python/oracle-abc
+```
+
+**方式一：临时 export**（不落盘，关掉终端就没了）。本地没有 GitHub 的 vars / secrets，
+所以下面这些都得自己 export：
 
 ```bash
 export OCI_CLI_TENANCY=ocid1.tenancy.oc1..xxx
@@ -351,24 +345,37 @@ export OCI_IMAGE_ID=ocid1.image.oc1..xxx
 export OCI_INSTANCE_NAME=oracle-abc
 export OCI_SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
 
-pip install -r python/oracle-abc/requirements.txt
-cd python/oracle-abc
 python index.py
 ```
 
 本地用 `OCI_CLI_KEY_FILE` 指定私钥路径，比把内容塞进环境变量方便。
+（注意 `OCI_CLI_KEY_FILE` 不在默认的覆盖白名单里，想用参数覆盖它得先在 workflow 里加 `OVERRIDE_NAMES`。）
+
+> 💡 不想每次 export 的话，可以把项目目录下的 `.env.example` 复制成 `.env` 填好 ——
+> `index.py` 启动时会自己读它，把没设置或为空的项补上（详见
+> [根 README「在本地跑」](../../README.md#9-在本地跑)）。
 
 ---
 
-## 相关文件
+## 建议的调度方式
+
+用外部调度器（cron-job.org 等）**每 1~5 分钟**打一次。
+
+因为 A1 缺货是常态，单次抢不到很正常，靠高频重试提高命中率 ——
+**不要**指望 GitHub 自带的 cron，实测极不可靠。
+
+调度器的具体配置步骤见[根 README「快速开始」第 5 步](../../README.md#55-第五步挂上外部调度器)。
+
+---
+
+## 本项目相关文件
 
 | 文件 | 作用 |
 |---|---|
 | `python/oracle-abc/index.py` | 入口脚本 |
-| `python/common/logging_config.py` | **语言级共享**日志初始化 |
+| `python/oracle-abc/.env.example` | `.env` 模板（提交；只放占位符）。同目录的 `.env` 才是实际生效的那个，已被 gitignore |
 | `.github/workflows/oracle-abc.yml` | 项目 workflow |
-| `.github/workflows/run-project.yml` | 总入口，按参数派发 |
-| `common/install-deps.sh` | 安装依赖（公共 + 项目独有） |
-| `common/check-secrets.sh` | 配置自检（secrets 输出 HMAC 指纹；variables 默认只输出空/长度，明文受 `DEBUG_MODE` 控制） |
-| `common/execute.sh` | 执行入口，输出同时写入日志和 `output.log` |
-| `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |
+| `python/common/logging_config.py` | Python 语言级共享的日志初始化 |
+
+> 通用层的 6 个 shell 脚本、总入口 workflow、`.gitignore` 等，见
+> [根 README「文件速查」](../../README.md#12-文件速查)。

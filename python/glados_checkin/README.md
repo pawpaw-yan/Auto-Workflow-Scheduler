@@ -1,36 +1,36 @@
 # glados_checkin
 
-GLaDOS（glados.cloud）自动签到，支持多账号、自动兑换、结果推送。
+GLaDOS / Railgun 自动签到，支持多域名多账号、可选自动兑换、结果推送。
 
-每个 Cookie（账号）依次执行 **查状态 → 签到 → 查积分 → 兑换**，最后把汇总结果推送到 PushDeer。
+> **本文件只讲这个项目自己的东西** —— 要配哪些名字、业务流程、专属的坑。
+>
+> 通用机制（项目结构、配置三层优先级、怎么触发、参数覆盖、`.env`、摘要与配置自检、本地运行）
+> 全部写在[仓库根 README](../../README.md) 里，这里不重复。
+
+| | |
+|---|---|
+| 对应 workflow | `.github/workflows/glados_checkin.yml` |
+| 对应 Environment | `python_glados_checkin` |
+| 入口脚本 | `python/glados_checkin/index.py` |
+| 建议调度频率 | 每天 1~2 次 |
 
 ---
 
-## 目录结构
+## 这个项目做什么
 
-```
-python/
-├── requirements.txt              # 语言级公共依赖（pypushdeer）
-├── common/                       # 语言级共享代码包
-│   ├── __init__.py
-│   └── logging_config.py         #   日志初始化（所有 Python 项目共用）
-└── glados_checkin/
-    ├── index.py                  # 入口脚本
-    ├── requirements.txt          # 项目独有依赖（requests）
-    └── README.md
-```
+`DOMAINS` 与 `COOKIES` **按行一一对应**，每一行组成一个「域名 + 账号」任务，
+依次执行 **查状态 → 签到 → 查积分 →（可选）兑换**，最后把汇总结果推送到 PushDeer。
 
-> `python/common/` 是 **Python 语言级共享代码包**，与仓库根的 `common/`（跨语言 shell 脚本）对称。
-> 项目脚本位于 `python/<项目>/`，比包根 `python/` 深一层，因此 `index.py` 开头会先把 `python/`
-> 加入 `sys.path`，再用 `from common.logging_config import init_logger` 引用——
-> 这样无论从仓库根目录还是项目目录启动都能解析。
-
-对应 workflow：`.github/workflows/glados_checkin.yml`
-对应 Environment：`python_glados_checkin`
+> Railgun 就是 GLaDOS 的镜像域名，API 路径与返回码完全一致，唯一区别是签到请求体里的
+> `token` 要填对应域名 —— 所以同一个脚本加一行域名就能把 railgun 一起签掉。
 
 ---
 
 ## 配置
+
+> 三层优先级规则、什么该放 Secret 什么该放 Variable、Environment 怎么建，
+> 见[根 README「配置体系」](../../README.md#6-配置体系通用)。
+> 这里只列**名称和取值范围**。
 
 ### Environment secrets
 
@@ -38,112 +38,92 @@ python/
 
 | 名称 | 必填 | 说明 |
 |---|---|---|
-| `GLADOS_COOKIES` | ✅ | 账号 Cookie，多账号用 `&` 分隔 |
+| `COOKIES` | ✅ | 账号 Cookie，**每行一个**，与 `DOMAINS` 按行一一对应 |
 | `PUSHDEER_SENDKEY` | 选填 | 不填则跳过推送，仅输出日志 |
 
 ### Environment variables
 
 在 **Settings → Environments → `python_glados_checkin` → Environment variables** 中添加：
 
-| 名称 | 默认值 | 可选值 | 说明 |
+| 名称 | 必填 | 取值 | 说明 |
 |---|---|---|---|
-| `GLADOS_EXCHANGE_PLAN` | `plan500` | `plan100` / `plan200` / `plan500` | 兑换计划 |
-| `GLADOS_VERBOSE` | `false` | `true`/`1`/`yes`/`y`、`false`/`0`/`no`/`n` | 是否输出详细日志 |
+| `DOMAINS` | ✅ | 如 `glados.cloud` / `railgun.info` | 签到域名，**每行一个**，行数必须与 `COOKIES` 一致 |
+| `GLADOS_EXCHANGE_PLAN` | 选填 | `plan100` / `plan200` / `plan500` | 兑换计划。**留空 = 不兑换**；填了非法值也不兑换 |
+| `GLADOS_VERBOSE` | 选填 | `true`/`1`/`yes`/`y`、`false`/`0`/`no`/`n` | 是否输出详细日志，默认 `false` |
 
-> **这两个是非敏感配置，放在 Variables 而不是 Secrets**——它们不是凭据，不需要加密存储。
-> 注意：**配置自检默认整步跳过**（公开仓库的日志任何人可读，不打出来最安全）。
-> 需要核对实际值时，临时打开调试开关重跑（见「配置自检 → 调试开关」）。
->
-> ⚠️ 如果误建成 Secret，或者 workflow 里的引用前缀写错（该用 `vars.` 却写了 `secrets.`），会**静默解析成空字符串**并回退到默认值——**不会报错**。用下面的"验证配置是否生效"一节确认。
-
-### 仓库级 secret
-
-在 **Settings → Secrets and variables → Actions → Secrets** 中添加：
-
-| 名称 | 必填 | 说明 |
-|---|---|---|
-| `COMMON_FINGERPRINT_KEY` | 选填 | 供 `common/check-secrets.sh` 生成 HMAC 指纹，自身绝不打印。不填则该列显示 `(skip: no key)` |
-
-任意随机字符串即可，生成方式（PowerShell）：
-
-```powershell
-(New-Guid).ToString('N') + (New-Guid).ToString('N')
-```
+> ⚠️ 如果误建成 Secret，或 workflow 里的引用前缀写错（该用 `vars.` 却写了 `secrets.`），
+> 会**静默解析成空字符串**并回退到默认值 —— **不会报错**。
+> 用[根 README「配置自检」](../../README.md#83-配置自检)确认。
 
 ---
 
-## Cookie 格式
+## 域名与 Cookie 格式
 
-1. 浏览器登录 glados.cloud
-2. 按 `F12` → **Application**（应用）→ **Cookies** → `https://glados.cloud`
-3. 复制**完整**的 cookie 字符串，形如：
+两个配置项**按行一一对应**：第 1 行域名 ↔ 第 1 行 Cookie。
 
-```
-koa:sess=xxx; koa:sess.sig=yyy
-```
-
-**多账号用 `&` 分隔**（脚本按 `&` 切分）：
+**`DOMAINS`（Variable，每行一个域名）：**
 
 ```
-koa:sess=AAA; koa:sess.sig=BBB&koa:sess=CCC; koa:sess.sig=DDD
+glados.cloud
+railgun.info
 ```
 
-每个片段会自动 `strip()`，所以 `&` 两边加不加空格都可以。
-
----
-
-## 触发方式
-
-### 1. 通过总入口（推荐）
+**`COOKIES`（Secret，每行一个账号的 Cookie）：**
 
 ```
-POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/run-project.yml/dispatches
-Authorization: Bearer <PAT>
-Content-Type: application/json
-
-{"ref":"main","inputs":{"project":"glados_checkin"}}
+koa:sess=AAA; koa:sess.sig=BBB
+koa:sess=CCC; koa:sess.sig=DDD
 ```
 
-### 2. 直达本项目
+**Cookie 怎么拿**：浏览器登录对应域名 → `F12` → **Application**（应用）→ **Cookies** →
+选中该域名 → 复制**完整**的 cookie 字符串，形如 `koa:sess=xxx; koa:sess.sig=yyy`。
 
-```
-POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/glados_checkin.yml/dispatches
-Authorization: Bearer <PAT>
-Content-Type: application/json
+**同一个域名有多个账号**时，重复写域名即可：
 
-{"ref":"main"}
-```
+| `DOMAINS` | `COOKIES` |
+|---|---|
+| `glados.cloud` | `koa:sess=A1; koa:sess.sig=B1` |
+| `glados.cloud` | `koa:sess=A2; koa:sess.sig=B2` |
+| `railgun.info` | `koa:sess=A3; koa:sess.sig=B3` |
 
-### 3. Actions 页面手动
+### 为什么用换行分隔，而不是 `&`
 
-**Actions** → **glados_checkin** → **Run workflow**
+Cookie 值本身含有 `;` `:` `=` `/`（见 `koa:sess=xxx; koa:sess.sig=yyy`），这些都不能当分隔符。
+换行是**唯一保证不会出现在 cookie 里**的字符（HTTP header 值不允许 CR/LF），
+而 GitHub secret 原生支持多行，直接粘贴就行。
+
+> 解析用 `splitlines()`，所以粘贴时混进 CRLF 也没关系（不会残留 `\r` 把 cookie 弄坏）。
+> 空行会被忽略，但**行数必须一致** —— 不一致脚本直接报错，避免错位把 A 站的 cookie 发到 B 站。
 
 ---
 
 ## 执行流程
 
 ```
-读取 GLADOS_COOKIES，按 & 切分成 N 个账号
+读取 DOMAINS / COOKIES，按行配对成 N 个「域名 + 账号」任务
         ↓
-对每个账号依次执行：
+对每个任务依次执行（域名取自该行）：
    1. GET  /api/user/status     查询剩余天数
-   2. POST /api/user/checkin    执行签到
+   2. POST /api/user/checkin    执行签到（token = 该行域名）
    3. GET  /api/user/points     查询总积分
-   4. POST /api/user/exchange   按 GLADOS_EXCHANGE_PLAN 兑换
+   4. POST /api/user/exchange   仅在配置了 GLADOS_EXCHANGE_PLAN 时才执行
         ↓
-汇总所有账号结果 → 推送 PushDeer
+汇总所有任务结果 → 推送 PushDeer
 ```
 
-**接口细节**（域名固定为 `glados.cloud`）：
+**接口细节**（路径对两个域名一致，域名取自 `DOMAINS` 的对应行）：
 
 | 步骤 | 方法 | 路径 | 请求体 |
 |---|---|---|---|
 | 查状态 | GET | `/api/user/status` | — |
-| 签到 | POST | `/api/user/checkin` | `{"token": "glados.cloud"}` |
+| 签到 | POST | `/api/user/checkin` | `{"token": "<该行域名>"}` |
 | 查积分 | GET | `/api/user/points` | — |
 | 兑换 | POST | `/api/user/exchange` | `{"planType": "<兑换计划>"}` |
 
 Cookie 通过请求头 `cookie` 传递，超时设置为连接 60 秒 / 读取 120 秒。
+
+**兑换是可选步骤**：`GLADOS_EXCHANGE_PLAN` 留空（或填了非法值）时**完全不发起兑换请求**。
+注意脚本**不校验积分是否够**，兑换成功与否完全由服务端返回决定。
 
 **签到返回码含义**：
 
@@ -155,145 +135,147 @@ Cookie 通过请求头 `cookie` 传递，超时设置为连接 60 秒 / 读取 1
 
 ---
 
-## 输出
+## 日志的详细程度
 
-### 日志
-
-格式：`YYYY-MM-DD HH:MM:SS | LEVEL   | message`
-
-`GLADOS_VERBOSE` 控制详细程度：
+日志格式与摘要机制见[根 README「跑完以后看什么」](../../README.md#8-跑完以后看什么)。
+本项目特有的只有一个开关 `GLADOS_VERBOSE`：
 
 | 输出位置 | `false`（默认） | `true` |
 |---|---|---|
 | 接口成功响应详情 | 隐藏 | 显示原始 `{ code, points, message }` |
 | 接口失败 / 异常 | **始终显示** | **始终显示** |
 | 每个账号的成功结果 | 只显示状态 | 状态 + 积分 + 天数 + 兑换 |
-| 最终日志总结块 | `#1 签到成功` | 完整一行 |
+| 最终日志总结块 | `#1 [glados.cloud] 签到成功` | 完整一行 |
 
 **注意**：失败信息**不受** `GLADOS_VERBOSE` 影响，一定输出，所以平时用 `false` 不会漏掉问题。
 
-### 推送
+### 推送内容
 
 推送到 PushDeer，内容**始终是完整的**，不受 `GLADOS_VERBOSE` 影响：
 
 ```
 标题：GLaDOS 签到, 成功1, 失败0, 重复0
 
-#1 P:10 剩余:180 天 总积分:2100 积分 | 签到成功 | 兑换成功: plan500
+#1 [glados.cloud] P:10 剩余:180 天 总积分:2100 积分 | 签到成功 | 兑换成功: plan500
 ```
-
-### 执行摘要（Job Summary）
-
-`index.py` **不需要做任何改动**——它照常往 stdout 打日志。摘要由 workflow 层负责，分两步：
-
-| 步骤 | 脚本 | 做什么 |
-|---|---|---|
-| `Run` | `common/execute.sh` | 执行 `index.py`，用 `tee` 把输出**同时**写进日志和 `<项目目录>/output.log`（日志仍实时可见） |
-| `Job Summary` | `common/render-summary.sh` | 读取 `output.log`，包成 Markdown 写进 `$GITHUB_STEP_SUMMARY`，显示在 run 的 Summary 页 |
-
-对应的 workflow 片段：
-
-```yaml
-- name: Run
-  run: bash common/execute.sh
-
-- name: Job Summary
-  if: always()          # 失败时也要把已产生的输出带出来
-  env:
-    SUMMARY_TITLE: GLaDOS 签到
-  run: bash common/render-summary.sh
-```
-
-Summary 页顶部会出现「GLaDOS 签到」标题 + 一个**默认展开**的「完整输出（N 行）」折叠块，内容是 `index.py` 的原始日志。这样不用点进日志 Tab，在 run 列表页就能直接看到输出。
-
-**设计要点：**
-
-| 点 | 说明 |
-|---|---|
-| 业务脚本零耦合 | `index.py` 完全不知道 GitHub Actions 的存在，本地与 CI 行为一致 |
-| 通用 | 任何项目只要经 `execute.sh` 执行，就能用 `render-summary.sh` 出摘要 |
-| 失败也有摘要 | 独立 step + `if: always()`，`Run` 失败时已产生的输出不会丢 |
-| 本地静默跳过 | 没有 `GITHUB_STEP_SUMMARY` 时直接跳过，不报错 |
-
-`output.log` 已加入 `.gitignore`。
-
-### 配置自检
-
-> **自检默认整步跳过**——`common/check-secrets.sh` 什么都不输出，日志里连表都没有。
-> 只有打开调试开关后它才会跑，并输出实际值用于排查（见下一节）。
-
-打开开关后，它会输出这样一张表：
-
-```
-配置自检（调试模式已开启：DEBUG_MODE=true）
-Environment : python_glados_checkin
-
-NAME                     TYPE      EMPTY   LENGTH    VALUE / FINGERPRINT
------------------------- --------- ------- --------- --------------------
-GLADOS_COOKIES           secret    no      135       fdc2b45c76e7
-PUSHDEER_SENDKEY         secret    yes     0         -
-GLADOS_EXCHANGE_PLAN     variable  no      7         plan500
-GLADOS_VERBOSE           variable  no      4         true
-```
-
-| 类型 | 展示内容 | 说明 |
-|---|---|---|
-| `secret` | HMAC-SHA256 指纹（前 12 位） | 值不可见，指纹可跨环境 / 跨运行比对，且没有密钥无法离线爆破。**无论任何开关都不会打印明文** |
-| `variable` | 明文值（超 60 字符自动截断） | 既然是主动开开关来排查，就直接给值；`LENGTH` 列保留完整长度 |
-| 未开开关 | **什么都不输出** | 公开仓库的 Actions 日志任何人可读，而 Variables 完全不受 GitHub 自动脱敏保护，所以默认连表都不打 |
-
-**指纹的用途**：同一 secret 在不同环境里指纹相同 → 配的是同一个值；同一环境跨运行指纹变了 → 说明有人改过这个 secret。
-
-自检范围由 workflow 里的两个变量控制：
-
-```yaml
-SECRET_NAMES:   "GLADOS_COOKIES PUSHDEER_SENDKEY"
-VARIABLE_NAMES: "GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
-```
-
-> 新增配置项时，记得同时把名字加到对应的这一类里，否则不会被自检。
-
-### 调试开关：启用自检
-
-自检默认整步跳过。需要排查配置时，打开调试开关**重跑一次**，用完关掉：
-
-| 开关 | 配在哪 | 作用范围 |
-|---|---|---|
-| `DEBUG_MODE` | **Environment `python_glados_checkin` → Variables** | **只影响本项目** |
-| `COMMON_DEBUG_MODE` | **仓库级 Variables**（Settings → Secrets and variables → Actions → Variables） | 影响所有项目 |
-
-判定规则：
-
-- 真值：`true` / `1` / `yes` / `on`（大小写不敏感）；其余值一律视为关闭
-- **`DEBUG_MODE` 有值就以它为准**（与 GitHub 自身的变量优先级一致），因此可以用 `DEBUG_MODE=false` 单独关掉某个已全局开启的环境
-- 两者都未设 / 非真值 → **整步跳过**（fail-closed）
-
-> ⚠️ **开关靠 workflow 的 `env:` 桥接才生效**——脚本只认进程环境变量：
-> ```yaml
-> DEBUG_MODE:        ${{ vars.DEBUG_MODE }}
-> COMMON_DEBUG_MODE: ${{ vars.COMMON_DEBUG_MODE }}
-> ```
->
-> **新增项目时别漏了这两行**，否则会出现「在 GitHub 设了开关却没反应」。
->
-> ⚠️ 这是**公开日志的限流阀，不是安全边界**：能修改仓库 Variables 的人，本来就能在 GitHub 界面上直接看到这些值。它只决定「要不要把它们写进公开日志」。
 
 ---
 
-## 本地运行
+## 常见问题
+
+> 通用问题（变量没生效、Summary 是空的、调度器没触发……）见
+> [根 README「常见问题（通用）」](../../README.md#11-常见问题通用)。下面是本项目专属的。
+
+### ⚠️ 任务失败但 workflow 显示绿色
+
+**这是已知行为**：`index.py` 的 `main()` 捕获了所有异常并正常返回，**从不调用 `sys.exit(1)`**。
+所以即使签到全部失败、或者根本没找到 Cookie，退出码依然是 `0`。
+
+**不要只看红绿**，要确认：
+
+1. 日志里有没有 `========== 签到总结 ==========` 这一段
+2. 推送内容里的成功 / 失败数量
+
+如果需要让 workflow 真实反映结果，可以在 `main()` 末尾根据失败数量 `sys.exit(1)`。
+
+### 日志出现 `环境变量 'GLADOS_VERBOSE' 的值 '' 无效`
+
+说明该 Variable **没有配置**，被解析成了空字符串。
+
+功能上**无影响**（最终用默认值 `false`），只是日志不干净。想让 warning 消失，把它显式设成 `false` 即可。
+
+`GLADOS_EXCHANGE_PLAN` 未设置时也会打一条 warning，但那条**是有效行为** ——
+留空就代表「明确不兑换」，脚本会跳过整个兑换步骤。不想兑换就别设它。
+
+### 日志出现 `未找到有效的 Cookie, 退出程序`
+
+`COOKIES` 为空，或格式不对导致切分后没有有效片段。检查：
+
+- Secret 是否真的配置了（打开 `DEBUG_MODE` 后看自检表的 `LENGTH` 列是否为 0）
+- Cookie 是否过期
+
+### 日志出现 `域名与 Cookie 数量不一致`
+
+`DOMAINS` 与 `COOKIES` 的**行数**不相等。两者是按行配对的，所以：
+
+- 每个域名都要有对应的一行 cookie，反过来也是
+- 同一个域名有多个账号时，**重复写域名**（不是把 cookie 合并成一行）
+
+```
+DOMAINS          COOKIES
+glados.cloud     cookie1
+glados.cloud     cookie2      ← 同一个域名的第 2 个账号
+railgun.info     cookie3
+```
+
+常见原因：从旧的 `&` 分隔格式迁移过来时只改了 `COOKIES`，忘了补 `DOMAINS`。
+
+### 兑换失败
+
+兑换**完全由服务端判定**，本地不校验积分是否足够。
+`required_points` 只用于日志，实际请求只发送 `{"planType": "<计划>"}`。
+
+常见原因：积分不足、该计划已兑换过、计划名不支持。
+
+把 `GLADOS_VERBOSE` 设为 `true` 能看到服务端返回的原始 `message`。
+
+### 兑换没执行（结果里是「未兑换」）
+
+说明 `GLADOS_EXCHANGE_PLAN` 没配置、或填了非法值。脚本**没拿到有效计划时不会发起兑换请求**，
+这是刻意设计 —— 避免「没配」被当成「用默认计划」，也避免非法值把计划悄悄换成别的。
+
+日志里会留下对应的 warning：
+
+```
+⚠️  环境变量 'GLADOS_EXCHANGE_PLAN' 未设置，本次不执行兑换（留空即明确表示不兑换）。
+⚠️  环境变量 'GLADOS_EXCHANGE_PLAN' 的值 'plan999' 无效（可选：plan100 / plan200 / plan500），本次不执行兑换。
+```
+
+> ⚠️ **多域名时兑换策略要自己拿主意**：配了 `plan500` 之后，**每个「域名 + 账号」任务都会各兑换一次**。
+> 如果 `glados.cloud` 和 `railgun.info` 背后是同一个账号、同一份积分，那就是重复兑换。
+> 建议先只在一个域名上开兑换，确认两个站点的积分是不是同一份再决定。
+
+### 怎么验证配置真的生效了
+
+**方法一**：打开调试开关（`DEBUG_MODE=true`）重跑，看 `Check secrets` 步骤输出的表格。
+
+**方法二**：看脚本启动日志，这几行**不受 verbose 影响**，一定输出，直接打印最终生效值：
+
+```
+ℹ️  共加载了 2 组 域名 / Cookie 用于签到。
+ℹ️    #1 🌐 glados.cloud
+ℹ️    #2 🌐 railgun.info
+ℹ️  当前 GLADOS_EXCHANGE_PLAN: plan500。
+ℹ️  当前 GLADOS_VERBOSE: False。
+```
+
+> 只打印域名，**不打印 cookie**。另外运行时会把每个 cookie 注册进日志遮蔽列表，
+> 万一将来有代码把它打出来也会是 `***`。
+
+### 本地怎么跑
 
 ```powershell
 cd python/glados_checkin
 
-# 装依赖：先公共、后项目独有
 pip install -r ../requirements.txt
 pip install -r requirements.txt
+```
 
-# 设环境变量
-$env:GLADOS_COOKIES       = "koa:sess=xxx; koa:sess.sig=yyy"
-$env:GLADOS_EXCHANGE_PLAN = "plan500"
+**方式一：临时 export**（不落盘，关掉终端就没了）。本地没有 GitHub 的 vars / secrets，
+所以下面这些都得自己设上：
+
+```powershell
+$env:DOMAINS = @"
+glados.cloud
+railgun.info
+"@
+$env:COOKIES = @"
+koa:sess=AAA; koa:sess.sig=BBB
+koa:sess=CCC; koa:sess.sig=DDD
+"@
+
+$env:GLADOS_EXCHANGE_PLAN = "plan500"   # 留空 = 不兑换
 $env:GLADOS_VERBOSE       = "true"
-$env:PUSHDEER_SENDKEY     = ""
 
 python index.py
 ```
@@ -304,7 +286,8 @@ Linux / macOS：
 cd python/glados_checkin
 pip install -r ../requirements.txt && pip install -r requirements.txt
 
-GLADOS_COOKIES='koa:sess=xxx; koa:sess.sig=yyy' \
+DOMAINS='glados.cloud' \
+COOKIES='koa:sess=xxx; koa:sess.sig=yyy' \
 GLADOS_EXCHANGE_PLAN=plan500 \
 GLADOS_VERBOSE=true \
 python index.py
@@ -312,72 +295,20 @@ python index.py
 
 本地调试建议开 `GLADOS_VERBOSE=true`，能看到每个接口的原始响应。
 
----
-
-## 常见问题
-
-### ⚠️ 任务失败但 workflow 显示绿色
-
-**这是当前已知行为。** `index.py` 的 `main()` 捕获了所有异常并正常返回，**从不调用 `sys.exit(1)`**。所以即使签到全部失败、或者根本没找到 Cookie，脚本的退出码依然是 `0`，workflow 会显示成功。
-
-因此**不要只看 workflow 的红绿**，要确认：
-
-1. 日志里有没有 `========== 签到总结 ==========` 这一段
-2. 推送内容里的成功 / 失败数量
-
-如果需要让 workflow 真实反映结果，可以在 `main()` 末尾根据失败数量 `sys.exit(1)`。
-
-### 日志出现 `环境变量 'GLADOS_VERBOSE' 的值 '' 无效`
-
-说明该 secret / variable **没有配置**，被解析成了空字符串。
-
-功能上**无影响**（最终用默认值 `false`），只是日志不干净。想让 warning 消失，把 `GLADOS_VERBOSE` 显式设成 `false` 即可（`GLADOS_EXCHANGE_PLAN` 同理，设成 `plan500`）。
-
-### 日志出现 `未找到有效的 Cookie, 退出程序`
-
-`GLADOS_COOKIES` 为空，或格式不对导致切分后没有有效片段。检查：
-
-- secret 是否真的配置了（看 `Check secrets` 表格的 `LENGTH` 列是否为 0）
-- Cookie 是否过期
-
-### 兑换失败
-
-兑换**完全由服务端判定**，本地不校验积分是否足够。`required_points` 只用于日志，实际请求只发送 `{"planType": "<计划>"}`。
-
-常见原因：积分不足、该计划已兑换过、计划名不支持。
-
-把 `GLADOS_VERBOSE` 设为 `true` 能看到服务端返回的原始 `message`。
-
-### 怎么验证配置真的生效了
-
-**方法一**：打开调试开关（`DEBUG_MODE=true`）后重跑，看 `Check secrets` 步骤输出的表格
-
-> 自检默认整步跳过，**必须先打开开关才能看到这张表**。
-
-| 现象 | 含义 |
-|---|---|
-| `EMPTY` 为 `yes`、`LENGTH` 为 `0` | **没注入成功**——没建、名字拼错、或引用前缀写错 |
-| `variable` 行 `LENGTH` 大于 0 | 注入成功，且能直接看到生效值 |
-| `secret` 行有 12 位指纹 | 注入成功（值不可见，只能靠指纹比对是否被改过） |
-
-**方法二**：看 Python 启动日志，这几行**不受 verbose 影响**，一定输出，直接打印最终生效值：
-
-```
-ℹ️  当前 GLADOS_EXCHANGE_PLAN: plan500。
-ℹ️  当前 GLADOS_VERBOSE: False。
-```
+> 💡 不想每次 export 的话，可以把项目目录下的 `.env.example` 复制成 `.env` 填好 ——
+> `index.py` 启动时会自己读它，把没设置或为空的项补上（详见
+> [根 README「在本地跑」](../../README.md#9-在本地跑)）。
 
 ---
 
-## 相关文件
+## 本项目相关文件
 
 | 文件 | 作用 |
 |---|---|
 | `python/glados_checkin/index.py` | 入口脚本 |
-| `python/common/logging_config.py` | **语言级共享**日志初始化（stdout，UTF-8，格式见上） |
+| `python/glados_checkin/.env.example` | `.env` 模板（提交；只放占位符）。同目录的 `.env` 才是实际生效的那个，已被 gitignore |
 | `.github/workflows/glados_checkin.yml` | 项目 workflow |
-| `.github/workflows/run-project.yml` | 总入口，按参数派发 |
-| `common/install-deps.sh` | 依赖安装 |
-| `common/check-secrets.sh` | 配置自检（secrets 输出 HMAC 指纹；variables 默认只输出空/长度，明文受 `DEBUG_MODE` 控制） |
-| `common/execute.sh` | 按入口扩展名执行，输出同时写入日志和 `output.log` |
-| `common/render-summary.sh` | 把 `output.log` 渲染成 Job Summary |
+| `python/common/logging_config.py` | Python 语言级共享的日志初始化 |
+
+> 通用层的 6 个 shell 脚本、总入口 workflow、`.gitignore` 等，见
+> [根 README「文件速查」](../../README.md#12-文件速查)。
