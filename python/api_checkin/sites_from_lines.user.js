@@ -736,78 +736,94 @@
     }
   }
 
+  /** 删掉一个令牌。刻意留在「新建」旁边：建多了就得能删，否则只能去站点手点 */
+  async function deleteToken(id) {
+    const data = await api("/api/token/" + id, { method: "DELETE" });
+    if (!data || data.success !== true) {
+      throw new Error((data && data.message) ? data.message : "删除失败（响应里没有 success）");
+    }
+  }
+
   function openExtractor() {
     const ui = makePanel("api_checkin：提取账号");
     const body = ui.body;
 
     const info = el("div", { class: "acs-kv" });
     const errorBox = el("div", { class: "acs-status" });
+
     const idInput = el("input", { type: "text", spellcheck: "false", placeholder: "用户 ID" });
     idInput.style.maxWidth = "150px";
     idInput.value = userIdFromLocalStorage();
     const retryBtn = el("button", { text: "重试" });
+
     const tokenSelect = el("select");
-    const createBtn = el("button", { text: "＋ 新建令牌" });
-    const useCookie = el("input", { type: "radio", name: "acs-mode", value: "cookie" });
-    const useToken = el("input", { type: "radio", name: "acs-mode", value: "token", checked: "checked" });
-    const outLine = el("textarea", { rows: "3", readonly: "readonly", spellcheck: "false" });
-    const outJson = el("textarea", { rows: "3", readonly: "readonly", spellcheck: "false" });
-    const copyLine = el("button", { class: "acs-primary", text: "复制行格式" });
-    const copyJson = el("button", { text: "复制 SITES JSON" });
+    const createBtn = el("button", { text: "＋ 新建" });
+    const deleteBtn = el("button", { text: "🗑 删除" });
+
+    // 这一组就是「提取到的东西」本身。令牌字段可编辑 —— 接口只给掩码时能把复制的完整值粘进来
+    const idField = el("input", { type: "text", readonly: "readonly", spellcheck: "false", placeholder: "（未取到）" });
+    const tokenField = el("input", { type: "text", spellcheck: "false", placeholder: "（选一个令牌；也可把站点上复制的完整值粘进来）" });
+    const cookieField = el("textarea", { rows: "2", readonly: "readonly", spellcheck: "false", placeholder: "（读不到，见上面的说明）" });
 
     let state = null;
 
-    function siteAccounts() {
-      if (!state) return [];
-      const label = (state.me && (state.me.username || state.me.display_name)) || location.hostname;
-      const token = siteAccounts.picked;
-      const accounts = [];
-
-      if (useToken.checked && token && token.key) {
-        accounts.push({
-          site: state.origin, label: label,
-          kind: AUTH_TOKEN, secret: token.key, userId: String(state.me.id || ""),
-        });
-      }
-      if (useCookie.checked && state.cookie) {
-        accounts.push({ site: state.origin, label: label, kind: AUTH_COOKIE, secret: state.cookie, userId: "" });
-      }
-      return accounts;
+    /** 一行「标签 + 值 + 复制」 */
+    function valueRow(labelText, field) {
+      field.style.flex = "1";
+      field.style.minWidth = "220px";
+      const copyBtn = el("button", { type: "button", text: "复制" });
+      copyBtn.addEventListener("click", () => {
+        if (!field.value) { toast("没有内容可复制", true); return; }
+        copyText(field.value).then((ok) => toast(ok ? labelText + " 已复制" : "复制失败，请手动复制", !ok));
+      });
+      return el("div", { class: "acs-row" }, [el("label", { text: labelText }), field, copyBtn]);
     }
 
-    function refreshOutput() {
-      const accounts = siteAccounts();
-      if (!accounts.length) {
-        outLine.value = "";
-        outJson.value = "";
-        return;
-      }
-      outLine.value = toLines(accounts);
-      outJson.value = render(buildSites(accounts), "sites", "main");
+    /** 这里只给**原始值**：用户 ID / 令牌 / Cookie。要行格式或 SITES JSON，走「SITES JSON」那条 */
+    function refreshValues() {
+      idField.value = (state && state.me) ? String(state.me.id || "") : "";
+      const picked = state ? state.tokens[Number(tokenSelect.value || 0)] : null;
+      tokenField.value = (picked && picked.key) || "";
+      cookieField.value = (state && state.cookie) || "";
     }
 
     function renderTokenOptions() {
       tokenSelect.textContent = "";
-      if (!state.tokens.length) {
+      if (!state || !state.tokens.length) {
         tokenSelect.appendChild(el("option", { value: "", text: "（没有令牌）" }));
         return;
       }
       state.tokens.forEach((token, i) => {
         const name = token.name || ("#" + (token.id || i + 1));
         const off = token.status !== 1 ? "（已禁用）" : "";
-        tokenSelect.appendChild(el("option", { value: String(i), text: name + off + "  " + tokenKeyOf(token).slice(0, 14) + "…" }));
+        tokenSelect.appendChild(el("option", { value: String(i), text: name + off }));
       });
       tokenSelect.value = "0";
     }
 
-    async function pickToken() {
-      if (!state || !state.tokens.length) return;
-      const index = Number(tokenSelect.value || 0);
-      const token = state.tokens[index];
-      if (!token) return;
+    /** 新建 / 删除之后都要重新拉一次列表 */
+    async function reloadTokens() {
+      const listed = await api("/api/token/?p=0&size=100");
+      state.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
+      renderTokenOptions();
+      await pickToken();
+    }
 
+    async function pickToken() {
       const verifyCell = info.querySelector("[data-acs-token-verify]");
-      verifyCell.textContent = "正在验证…";
+      const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
+
+      if (!state) { refreshValues(); return; }
+      if (!state.tokens.length) {
+        setVerify("没有令牌，可点「＋ 新建」建一个");
+        refreshValues();
+        return;
+      }
+
+      const token = state.tokens[Number(tokenSelect.value || 0)];
+      if (!token) { refreshValues(); return; }
+
+      setVerify("正在验证…");
 
       // 列表接口常常只给掩码，这时先向 /api/token/{id} 要完整值
       let key = tokenKeyOf(token);
@@ -816,18 +832,12 @@
         if (full) key = full;
       }
       token.key = key;
-      siteAccounts.picked = token;
+      refreshValues();
 
       const reason = await verifyToken(key, state.me.id);
-      if (!reason) {
-        verifyCell.textContent = "✅ 令牌已验证可用";
-      } else if (looksMasked(key)) {
-        verifyCell.textContent = "⚠️ 拿不到完整令牌：列表接口只返回掩码（" + key
-          + "）。去站点「令牌」页点复制，再把完整值手工填进 SITES";
-      } else {
-        verifyCell.textContent = "⚠️ 令牌验证没通过：" + reason;
-      }
-      refreshOutput();
+      if (!reason) setVerify("✅ 令牌已验证可用");
+      else if (looksMasked(key)) setVerify("⚠️ 拿不到完整令牌：列表接口只返回掩码（" + key + "）。去站点「令牌」页点复制，再粘进下面的「令牌」框");
+      else setVerify("⚠️ 令牌验证没通过：" + reason);
     }
 
     function renderInfo(message) {
@@ -876,11 +886,12 @@
         errorBox.className = "acs-status ok";
         errorBox.textContent = state.tokens.length
           ? "读到 " + state.tokens.length + " 个令牌"
-          : "这个账号还没有令牌，点「＋ 新建令牌」建一个";
+          : "这个账号还没有令牌，点「＋ 新建」建一个";
         await pickToken();
       } catch (e) {
         state = null;
         renderInfo();
+        refreshValues();
         errorBox.className = "acs-status err";
         errorBox.textContent = e.message;
       }
@@ -894,14 +905,12 @@
       try {
         const name = "api_checkin " + new Date().toISOString().slice(0, 10);
         await createToken(name, state.me.id);
-        const listed = await api("/api/token/?p=0&size=100");
-        state.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
-        renderTokenOptions();
+        await reloadTokens();
         // 刚建的排最后，直接选中它
         tokenSelect.value = String(Math.max(0, state.tokens.length - 1));
         await pickToken();
         errorBox.className = "acs-status ok";
-        errorBox.textContent = "已新建令牌：" + name;
+        errorBox.textContent = "已新建令牌：" + name + "（只是标签，站点上可以改）";
       } catch (e) {
         errorBox.className = "acs-status err";
         errorBox.textContent = "新建失败：" + e.message;
@@ -910,15 +919,51 @@
       }
     });
 
+    deleteBtn.addEventListener("click", async () => {
+      if (!state || !state.tokens.length) return;
+      const token = state.tokens[Number(tokenSelect.value || 0)];
+      if (!token || !token.id) return;
+
+      const name = token.name || ("#" + token.id);
+      const sure = window.confirm(
+        "确定删除令牌「" + name + "」？\n\n"
+        + "这一步在站点上不可撤销。如果别的脚本正在用这个令牌，删了它们就会 401。"
+      );
+      if (!sure) return;
+
+      deleteBtn.disabled = true;
+      errorBox.className = "acs-status";
+      errorBox.textContent = "正在删除…";
+      try {
+        await deleteToken(token.id);
+        await reloadTokens();
+        errorBox.className = "acs-status ok";
+        errorBox.textContent = "已删除令牌：" + name;
+      } catch (e) {
+        errorBox.className = "acs-status err";
+        errorBox.textContent = "删除失败：" + e.message;
+      } finally {
+        deleteBtn.disabled = false;
+      }
+    });
+
     tokenSelect.addEventListener("change", pickToken);
     retryBtn.addEventListener("click", load);
-    [useToken, useCookie].forEach((radio) => radio.addEventListener("change", refreshOutput));
 
-    copyLine.addEventListener("click", () => {
-      copyText(outLine.value).then((ok) => toast(ok ? "行格式已复制" : "复制失败，请手动复制", !ok));
-    });
-    copyJson.addEventListener("click", () => {
-      copyText(outJson.value).then((ok) => toast(ok ? "SITES JSON 已复制" : "复制失败，请手动复制", !ok));
+    // 接口只给掩码时，把站点上复制的完整令牌粘进来验一下
+    tokenField.addEventListener("change", async () => {
+      const manual = tokenField.value.trim();
+      if (!manual || !state) return;
+      const key = manual.indexOf("sk-") === 0 ? manual : "sk-" + manual;
+      const verifyCell = info.querySelector("[data-acs-token-verify]");
+      if (verifyCell) verifyCell.textContent = "正在验证手工填的令牌…";
+
+      const reason = await verifyToken(key, state.me.id);
+      if (verifyCell) {
+        verifyCell.textContent = reason
+          ? "⚠️ 手工填的令牌没通过：" + reason
+          : "✅ 手工填的令牌验证通过，可以直接复制去用";
+      }
     });
 
     body.appendChild(info);
@@ -928,19 +973,16 @@
       el("label", { text: "用户 ID" }), idInput, retryBtn,
     ]));
     body.appendChild(el("div", { class: "acs-row" }, [
-      el("label", { text: "令牌" }), tokenSelect, createBtn,
+      el("label", { text: "令牌" }), tokenSelect, createBtn, deleteBtn,
     ]));
-    body.appendChild(el("div", { class: "acs-row" }, [
-      el("label", { text: "凭证来源" }),
-      el("label", {}, [useToken, el("span", { text: " 令牌（推荐，不过期）" })]),
-      el("label", {}, [useCookie, el("span", { text: " Cookie" })]),
+    body.appendChild(el("div", { class: "acs-row", style: "margin:12px 0 6px" }, [
+      el("b", { text: "提取到的值" }),
     ]));
-    body.appendChild(el("div", { class: "acs-row", style: "margin:10px 0 6px" }, [el("label", { text: "行格式" })]));
-    body.appendChild(outLine);
-    body.appendChild(el("div", { class: "acs-row", style: "margin:8px 0 6px" }, [el("label", { text: "SITES JSON" })]));
-    body.appendChild(outJson);
-    body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [copyLine, copyJson]));
-    body.appendChild(el("p", { class: "acs-hint", text: "全部在本机浏览器里完成；账号表只会进剪贴板，不会发往任何第三方。" }));
+    body.appendChild(valueRow("用户 ID", idField));
+    body.appendChild(valueRow("令牌", tokenField));
+    body.appendChild(valueRow("Cookie", cookieField));
+    body.appendChild(el("p", { class: "acs-hint", text: "要把它们变成行格式 / SITES JSON：用菜单里的「SITES JSON」粘一遍（GitHub 派发页也有同一个按钮）。" }));
+    body.appendChild(el("p", { class: "acs-hint", text: "全部在本机浏览器里完成，不会发往任何第三方。" }));
 
     load();
   }
@@ -979,6 +1021,19 @@
     if (launcherMenu) { launcherMenu.remove(); launcherMenu = null; }
   }
 
+  /** 把菜单贴在按钮下方；下方放不下就翻到上方。拖动时要实时重算，所以单独拎出来 */
+  function placeMenu(btn, menu) {
+    const rect = btn.getBoundingClientRect();
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menu.offsetWidth - 8));
+    let top = rect.bottom + 6;
+    if (top + menu.offsetHeight > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - menu.offsetHeight - 6);
+    }
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+    menu.style.right = "auto";
+  }
+
   function openLauncherMenu(btn) {
     if (launcherMenu) { closeLauncherMenu(); return; }   // 再点一次 = 收起
 
@@ -1001,15 +1056,7 @@
     document.body.appendChild(menu);
     launcherMenu = menu;
 
-    // 贴在按钮下方；下方放不下就翻到上方
-    const rect = btn.getBoundingClientRect();
-    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menu.offsetWidth - 8));
-    let top = rect.bottom + 6;
-    if (top + menu.offsetHeight > window.innerHeight - 8) {
-      top = Math.max(8, rect.top - menu.offsetHeight - 6);
-    }
-    menu.style.left = left + "px";
-    menu.style.top = top + "px";
+    placeMenu(btn, menu);
 
     ["click", "mousedown", "pointerdown"].forEach((type) => {
       menu.addEventListener(type, (event) => event.stopPropagation());
@@ -1045,6 +1092,7 @@
       const dy = event.clientY - startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
       placeAt(btn, clampToViewport(btn, startLeft + dx, startTop + dy));
+      if (launcherMenu) placeMenu(btn, launcherMenu);   // 展开着的菜单跟着一起走
     });
 
     function endDrag(event) {
@@ -1057,6 +1105,7 @@
         const rect = btn.getBoundingClientRect();
         savePos(clampToViewport(btn, rect.left, rect.top));
       }
+      if (launcherMenu) placeMenu(btn, launcherMenu);
     }
     btn.addEventListener("pointerup", endDrag);
     btn.addEventListener("pointercancel", endDrag);
@@ -1073,6 +1122,7 @@
       const rect = btn.getBoundingClientRect();
       const pos = clampToViewport(btn, rect.left, rect.top);
       if (pos.left !== rect.left || pos.top !== rect.top) placeAt(btn, pos);
+      if (launcherMenu) placeMenu(btn, launcherMenu);
     });
   }
 
