@@ -19,7 +19,7 @@ name: api_checkin
 # ── 用 ref 传账号列表（SITES）──
 # 直接把账号表填进 SITES（Actions 页面），或放进 inputs.SITES（API）：
 #
-#   {"ref":"main","inputs":{"SITES":"{\"https://e.c.h-e.top\":{\"tokens\":[\"aN9...Y/8\"]}}"}}
+#   {"ref":"main","inputs":{"SITES":"{\"https://e.c.h-e.top\":{\"tokens\":[{\"token\":\"aN9...Y/8\",\"user_id\":\"38798\"}]}}"}}
 #
 # ⚠️ input 的值永远是**字符串**，所以 SITES 那段 JSON 要转义一遍再嵌进 body（上面这样）。
 #    整行必须在一行内写完：HTTP body 的 JSON 字符串内部不能出现真换行，

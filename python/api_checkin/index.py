@@ -26,13 +26,14 @@
 # 账号配置 SITES 支持两种写法（以 `{` 开头就当 JSON，否则按行格式解析）：
 #
 #   ① JSON —— 用 ref 传参时推荐。值是「按类型分桶」（推荐）或「扁平数组」（早期写法）
-#        // 分桶：桶名即类型，桶内裸写不猜 —— 所以非 sk- 开头的令牌也能直接用
-#        {"https://a.com": {"cookies": ["session=xxx"],
-#                           "tokens":  ["aNSC...Y/8", {"token": "sk-qqq", "user_id": "1001"}]},
-#         "https://b.com": {"tokens": ["sk-zzz"]}}
-#        // 扁平数组：靠自动判断类型，非 sk- 令牌必须写 `token:` 前缀
+#        // 分桶：桶名即类型，桶内元素**一律是对象**，所以不做任何猜测 ——
+#        //      非 sk- 开头的令牌也能直接用；user_id / label 总有地方放。
+#        {"https://a.com": {"cookies": [{"cookie": "session=xxx"}],
+#                           "tokens":  [{"token": "aNSC...Y/8", "user_id": "38798",
+#                                        "label": "备用"}]},
+#         "https://b.com": {"tokens": [{"token": "sk-zzz"}]}}
+#        // 扁平数组（早期写法）：靠自动判断类型，非 sk- 令牌必须写 `token:` 前缀
 #        {"https://a.com": ["session=xxx", "sk-yyy"]}
-#      数组元素可以是字符串，也可以是对象（对象用来带 user_id / label）。
 #
 #   ② 行格式 —— 写进 Environment secret 时推荐（类型是独立一段，天然无歧义）
 #        <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
@@ -284,11 +285,15 @@ def _account_from_json(
     user_id = ""
 
     if isinstance(entry, str):
-        text = entry.strip()
         if force_kind:
-            kind, secret = force_kind, text
-        else:
-            kind, secret = _detect_credential(text, where)
+            # 分桶写法要求元素**一律是对象**：只有一种形态，
+            # 不用再记「什么时候该包成对象」，user_id / label 也总有地方放。
+            raise ConfigError(
+                f"{where}：分桶里的元素必须写成对象，例如 "
+                f'{{"{force_kind}":"<凭证>","user_id":"<用户ID>","label":"<标签>"}}'
+                "（后两个可省略）"
+            )
+        kind, secret = _detect_credential(entry.strip(), where)
     elif isinstance(entry, dict):
         label = str(entry.get("label") or "")
         user_id = str(entry.get("user_id") or "")
@@ -320,14 +325,14 @@ def parse_sites_json(raw: str) -> List[Account]:
 
     值的写法有两种，**推荐分桶**：
 
-    ① 分桶（推荐）—— 桶名即类型，桶内裸写凭证不再有歧义：
+    ① 分桶（推荐）—— 桶名即类型，桶内元素**一律是对象**：
 
         {
           "https://站点A": {
-            "cookies": ["session=xxx", "new-api-session=yyy"],
-            "tokens":  ["aNSC...Y/8", {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]
+            "cookies": [{"cookie": "session=xxx"}],
+            "tokens":  [{"token": "aNSC...Y/8", "user_id": "38798", "label": "备用"}]
           },
-          "https://站点B": {"tokens": ["sk-qqq"]}
+          "https://站点B": {"tokens": [{"token": "sk-qqq"}]}
         }
 
     ② 扁平数组（早期写法，继续支持）—— 靠自动判断类型：
@@ -340,10 +345,11 @@ def parse_sites_json(raw: str) -> List[Account]:
     两种写法共同的规则：
     - 键是站点地址，必须带 `http://` 或 `https://`
     - 站点只挂一个账号时，值可以写字符串：`{"https://a.com": "session=xx"}`
-    - 数组元素可以是字符串，也可以是对象（对象用来带 `user_id` / `label`）
 
     分桶专属规则：
     - 桶名只认 `cookies`（一律当 cookie）和 `tokens`（一律当令牌）—— 桶内**不做自动判断**
+    - 桶内元素**必须是对象**，不能裸写字符串；对象里的字段名要与桶名一致
+      （`cookies` 里写 `cookie`、`tokens` 里写 `token`），`user_id` / `label` 可省略
     - 两个桶可任选，至少一个非空；`[]` 或省略都行
     - `oauth` 允许存在但**必须为空**（不确定它该发什么请求头，宁可不做也不静默 401）
     """
@@ -401,17 +407,30 @@ BUCKET_UNSUPPORTED = ("oauth",)
 def _accounts_from_buckets(site: str, buckets: dict, where: str) -> List[Account]:
     """解析「按类型分桶」的写法：`{"cookies": [...], "tokens": [...]}`。
 
-    桶名就是类型，所以桶内**裸写凭证不再有歧义** —— 不需要 `token:` 前缀，
-    也不会出现「非 `sk-` 开头认不出」「base64 结尾的 `=` 被误判成 cookie」这类问题。
+    桶内元素**一律是对象**：
+
+        {"tokens": [{"token": "aN9...Y/8", "user_id": "38798", "label": "备用"}]}
+
+    `user_id` / `label` 可省略。只有一种元素形态，不用再记「什么时候该包成对象」；
+    桶名 + 对象字段名两处都声明了类型，所以也**不做任何猜测** ——
+    不会出现「非 `sk-` 开头认不出」「base64 结尾的 `=` 被误判成 cookie」这类问题。
     """
     unknown = [
         key for key in buckets
         if key not in BUCKET_KINDS and key not in BUCKET_UNSUPPORTED
     ]
     if unknown:
+        # 最常见的错法是把**账号级**字段（user_id / label）放到站点级 —— 顺手点明
+        hint = ""
+        if any(key in ("user_id", "label") for key in unknown):
+            hint = (
+                "。⚠️ `user_id` / `label` 是**单个账号**的字段，不能放在这一层，"
+                '要写成桶内的对象元素：{"tokens":[{"token":"...","user_id":"38798"}]}'
+            )
         raise ConfigError(
-            f"{where}：不认识的分桶 {unknown}。只支持 `cookies` / `tokens`；"
-            '只想挂一个账号就写成桶里的数组，例如 {"cookies": ["session=xxx"]}'
+            f"{where}：不认识的分桶 {unknown}。只支持 `cookies` / `tokens`"
+            '（只有一个账号就写成 {"cookies": [{"cookie": "session=xxx"}]}）'
+            + hint
         )
 
     for key in BUCKET_UNSUPPORTED:
@@ -428,10 +447,12 @@ def _accounts_from_buckets(site: str, buckets: dict, where: str) -> List[Account
         entries = buckets.get(key)
         if entries is None:
             continue
-        if isinstance(entries, str):
-            entries = [entries]
         if not isinstance(entries, list):
-            raise ConfigError(f"{where}：`{key}` 必须是数组，当前是 {type(entries).__name__}")
+            raise ConfigError(
+                f"{where}：`{key}` 必须是数组，元素是对象，"
+                f'例如 {{"{kind}":"<凭证>","user_id":"<用户ID>"}}'
+                f"（当前是 {type(entries).__name__}）"
+            )
 
         for nth, entry in enumerate(entries, 1):
             seq += 1

@@ -122,13 +122,13 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 **① `SITES` 的值**（账号表本身）—— Actions 页面上那个 `SITES` 输入框填它：
 
 ```json
-{"https://a.com":{"cookies":["session=xxx"],"tokens":["aNSC....Y/8",{"token":"sk-zzz","user_id":"1001","label":"小号"}]},"https://b.com":{"tokens":["sk-qqq"]}}
+{"https://a.com":{"cookies":[{"cookie":"session=xxx"}],"tokens":[{"token":"aNSC....Y/8"},{"token":"sk-zzz","user_id":"1001","label":"小号"}]},"https://b.com":{"tokens":[{"token":"sk-qqq"}]}}
 ```
 
 **② 完整的 HTTP body** —— curl / cron-job.org 填它：参数名叫 `SITES`，值是**转义过的字符串**：
 
 ```json
-{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"aNSC....Y/8\"}]}}"}}
 ```
 
 > ⚠️ **别把这两个混起来。** 最常见的错误写法是把账号表直接放在顶层：
@@ -141,39 +141,51 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 > 因为 dispatch 接口的 body **只允许 `ref` 和 `inputs` 两个顶层键** ——
 > 配置必须放在 `inputs` 里。详见下面的「三种入口」。
 
-**结构：站点 → 分桶 → 凭证数组。** 桶名就是类型：
+**结构：站点 → 分桶 → 凭证对象数组。** 桶名就是类型：
 
-| 桶 | 桶内元素一律当 |
-|---|---|
-| `cookies` | **cookie** |
-| `tokens` | **令牌** |
+| 桶 | 桶内元素的字段名 | 元素一律当 |
+|---|---|---|
+| `cookies` | `cookie` | **cookie** |
+| `tokens` | `token` | **令牌** |
 
 两个桶都可选，至少一个非空（写 `[]` 或直接省略都行）；一个站点挂几个号就放几个元素。
 
-> **分桶的意义**：桶名已经声明了类型，所以**桶内裸写凭证，不做任何猜测** ——
+> **分桶的意义**：桶名 + 对象字段名两处都声明了类型，所以**不做任何猜测** ——
 > 令牌不以 `sk-` 开头也无所谓，更不需要写 `token:` 前缀。
 
-### 桶内什么时候要写成对象？
+### 桶内元素一律是对象
 
-**只有两个需求**：带用户 ID，或带标签。
+**只有一种形态**，不用记「什么时候该包成对象」：
 
 ```json
-{"token": "sk-zzz", "user_id": "1001", "label": "小号"}
+{"tokens": [{"token": "aNSC....Y/8"}, {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]}
 ```
 
 | 字段 | 是什么 | 从哪来 / 什么时候要 |
 |---|---|---|
-| `token` | **就是页面上那一串** | 「个人设置 → 安全设置 → 系统访问令牌」，原样复制。**没有别的附加内容** |
+| `token`（或 `cookie`） | **就是页面上那一串** | 「个人设置 → 安全设置 → 系统访问令牌」，原样复制。**没有别的附加内容**。字段名要和桶名一致 |
 | `user_id` | 你的**用户 ID**，是一个**数字**，不是令牌的一部分 | 令牌认证时 new-api 管理接口要求 `New-Api-User: <用户ID>`，官方文档原文是「**{user_id} 必须与当前登录用户匹配**」。不填有的站点直接 401，而报错看着像「令牌错了」，极难排查。**cookie 认证用不上它** |
 | `label` | **你自己起的备注名** —— 站点上根本没有这个概念 | **纯展示**，出现在日志和推送里（`#1 [主号] token \| +500 \| 余额 12,345 \| ok`）。一个站点只挂一个号时完全不用写 |
+
+后两个都能省，但 **`token` / `cookie` 字段名不能省** —— 它是「哪一段是凭证」的唯一标识。
+
+> ⚠️ **最容易放错的一步：`user_id` 挂在「单个凭证」上，不是挂在站点上。**
+>
+> | | 写法 |
+> |---|---|
+> | ❌ 放到站点级 | `{"https://a.com":{"tokens":[{"token":"sk-x"}],"user_id":"1001"}}` → 报 **`不认识的分桶 user_id`** |
+> | ✅ 放到凭证上 | `{"https://a.com":{"tokens":[{"token":"sk-x","user_id":"1001"}]}}` |
+>
+> 因为 `user_id` 是**每个账号自己的** —— 一个站点挂两个号时两个 `user_id` 不同，
+> 放在站点级没法区分是哪个号的。
 
 > **`user_id` 在哪找？** ①「个人设置」页（有的版本会显示）；② 管理员在「用户管理」列表里能看到；
 > ③ **最省事**：先用 cookie 认证跑一次 —— 脚本调 `/api/user/self` 时会顺手把你的用户 ID 打进日志。
 
-所以**页面上你能拿到的只有那串字符串**。只挂一个号、又不需要 `user_id` 时，桶内全是裸字符串：
+所以**页面上你能拿到的只有那串字符串**，最简形式就是只给它一个字段：
 
 ```json
-{"SITES":{"https://你的站点":{"tokens":["粘贴页面那一串"]}}}
+{"SITES":{"https://你的站点":{"tokens":[{"token":"粘贴页面那一串"}]}}}
 ```
 
 **怎么把它送进去 —— 三种入口，前两种不需要你手写任何转义：**
@@ -182,7 +194,7 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ```bash
 gh workflow run api_checkin.yml \
-  -f SITES='{"https://a.com":{"tokens":["aNSC....Y/8"]}}'
+  -f SITES='{"https://a.com":{"tokens":[{"token":"aNSC....Y/8"}]}}'
 ```
 
 外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
@@ -200,13 +212,13 @@ gh workflow run api_checkin.yml \
 参数名就是 `SITES`，只是值是**字符串**，所以账号表那段 JSON 要转义一遍：
 
 ```json
-{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"aNSC....Y/8\"}]}}"}}
 ```
 
 别手写，交给 `jq` 生成：
 
 ```bash
-body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":["aNSC....Y/8"]}}' \
+body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":[{"token":"aNSC....Y/8"}]}}' \
         '{ref:"main", inputs:{SITES: ($sites | tojson)}}')
 curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github+json" \
   https://api.github.com/repos/<owner>/<repo>/actions/workflows/api_checkin.yml/dispatches \
@@ -246,7 +258,7 @@ curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github
 
 站点只挂一个账号时，扁平写法可以省掉数组：`{"https://a.com": "session=xx"}`。
 ⚠️ 这个简写走自动判断，非 `sk-` 令牌仍需 `token:` 前缀 —— 那种情况就写
-`{"https://a.com": {"tokens": ["aNSC....Y/8"]}}`。
+`{"https://a.com": {"tokens": [{"token": "aNSC....Y/8"}]}}`。
 
 ### ⚠️ 用 ref 传凭证 = 公开这些凭证
 
@@ -403,7 +415,7 @@ https://api.example.com #2 [小号] cookie | repeat
 两个顶层键。对照「用 ref 传账号」开头的两个写法，正确的长这样：
 
 ```json
-{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[\"sk-x\"]}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"sk-x\"}]}}"}}
 ```
 
 ### 令牌认证报 401 / 403
