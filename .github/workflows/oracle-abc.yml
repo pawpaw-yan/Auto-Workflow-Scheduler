@@ -19,11 +19,26 @@ name: oracle-abc
 # 典型用法：由外部调度器（cron-job.org 等）每 5 分钟触发一次，
 #          因为 A1 常年缺货，"没抢到"是预期内结果，脚本会正常退出 0。
 #
-# 通用逻辑全部在 common/*.sh，本文件只做「声明」。
+# 配置来源优先级（高 → 低）：
+#     ref（inputs.overrides）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
+# ⚠️ 覆盖时要用**脚本读取的变量名**（如 TARGET_OCPUS），不是 GitHub Variable 名（TARGET）。
+#
+# .env 是最低优先级，由 Python 侧在运行期读取（python/common/dotenv.py），不在 workflow 里体现。
+#
+# 通用逻辑全部在 common/*.sh，本文件只做「声明」：
+#   common/apply-overrides.sh  ref 层：应用 inputs.overrides
 # ═══════════════════════════════════════════════════════════════════════
 
 on:
   workflow_dispatch:
+    inputs:
+      # 可选：JSON 对象，本次运行用它的值替换下面的 vars / secrets。
+      # 只列名字不列值，且值会注册进日志遮蔽列表。留空 = 完全使用仓库配置。
+      overrides:
+        description: 'JSON：临时覆盖 vars/secrets，如 {"TARGET_OCPUS":"4"}；留空 = 用仓库配置'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: oracle-abc
@@ -90,6 +105,10 @@ jobs:
       GRAB_MEMORY_GB: ${{ vars.MEMORY }}
       TARGET_OCPUS:   ${{ vars.TARGET }}
 
+      # ── 参数覆盖：workflow_dispatch 的 inputs.overrides（JSON 单行）──
+      #    留空 → common/apply-overrides.sh 整步跳过，继续用上面的 vars / secrets。
+      OVERRIDES:      ${{ inputs.overrides }}
+
       # 可选：每轮放大倍数，默认 2（翻倍：1c→2c→4c）。设为 1 则逐级 +1
       # STEP_FACTOR:     ${{ vars.STEP_FACTOR }}
 
@@ -113,11 +132,20 @@ jobs:
       # 自检项名称（仅在调试开关开启时才会被读取与输出）：
       #   secrets    → 只输出 HMAC 指纹，永不打印明文
       #   variables  → 输出明文值
+      # ⚠️ 必须写**进程里真实存在的变量名**：OCPU / MEMORY / TARGET 只是 GitHub Variable
+      #    的显示名，上面已被映射成 GRAB_OCPUS / GRAB_MEMORY_GB / TARGET_OCPUS。
+      #    写成原名的话自检表永远显示空，而且 inputs.overrides 覆盖它也不生效。
+      #    这两份清单同时也是 apply-overrides.sh 的默认覆盖白名单。
       SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
-      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCI_SSH_PUBLIC_KEY OCPU MEMORY TARGET"
+      VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCI_SSH_PUBLIC_KEY GRAB_OCPUS GRAB_MEMORY_GB TARGET_OCPUS"
 
     steps:
       - uses: actions/checkout@v4
+
+      # 必须排在 Check secrets / Run 之前：它把覆盖值写进 GITHUB_ENV，
+      # 后续 step（含自检表）读到的才是本次真正生效的配置。
+      - name: Apply overrides
+        run: bash common/apply-overrides.sh
 
       - name: Setup Python
         uses: actions/setup-python@v5

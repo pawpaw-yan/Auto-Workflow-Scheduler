@@ -73,6 +73,7 @@ except ImportError as exc:
     )
     sys.exit(1)
 
+from common.dotenv import load_dotenv
 from common.logging_config import init_logger
 
 logger = init_logger("oracle_abc")
@@ -451,6 +452,10 @@ def upgrade_until_target(
 
 # ─────────────────────────── 主流程 ───────────────────────────
 def main() -> int:
+    # .env 是最低优先级的一层：只填补 ref / vars / secrets 都没提供的键。
+    # 必须排在任何 require_env / read_settings 之前 —— 它们读的就是 os.environ。
+    load_dotenv(os.path.join(_HERE, ".env"), logger=logger)
+
     settings = read_settings()
     config = build_oci_config()
     compartment_id = require_env("OCI_COMPARTMENT_ID")

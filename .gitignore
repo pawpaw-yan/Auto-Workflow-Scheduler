@@ -4,3 +4,7 @@ __pycache__/
 
 # 项目运行时产生的执行输出（由 common/render-summary.sh 渲染进 Job Summary）
 output.log
+
+# 每个脚本目录下的本地配置层（由 python/common/dotenv.py 在运行期读取）
+# 只忽略 .env 本身；同目录的 .env.example 模板是要提交的
+.env

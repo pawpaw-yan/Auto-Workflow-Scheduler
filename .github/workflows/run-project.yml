@@ -25,6 +25,11 @@ on:
         required: false
         default: ''
         type: string
+      overrides:
+        description: 'JSON：临时覆盖目标项目的 vars/secrets（原样转发，值不回显）'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +45,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # workflow_dispatch 是「GITHUB_TOKEN 不触发新 run」的例外
           PROJECT_RAW: ${{ inputs.project }}
           REF_INPUT: ${{ inputs.ref }}
+          OVERRIDES_INPUT: ${{ inputs.overrides }}
         run: |
           set -euo pipefail
 
@@ -76,11 +82,18 @@ jobs:
           fi
           echo "→ $PROJECT_RAW ⇒ $matched (ref=$ref)"
 
-          # 派发
+          # 派发。用 jq 构造 payload：ref / overrides 都可能含引号或换行，
+          # 手工拼 JSON 会把请求直接打坏。
+          # ⚠️ 被派发的项目 workflow 必须声明 inputs.overrides，否则传参会得到 422
+          #    （Unexpected inputs provided）；所以只在传了参数时才带 inputs。
+          payload=$(jq -n --arg ref "$ref" --arg ov "${OVERRIDES_INPUT:-}" \
+            '{ref: $ref, return_run_details: true}
+             + (if ($ov | length) > 0 then {inputs: {overrides: $ov}} else {} end)')
+
           code=$(curl -s -o resp.json -w '%{http_code}' -X POST "${hdr[@]}" \
                    -H "Content-Type: application/json" \
                    "${api}/actions/workflows/${matched}/dispatches" \
-                   -d "{\"ref\":\"${ref}\",\"return_run_details\":true}")
+                   -d "$payload")
 
           if [ "$code" != "200" ] && [ "$code" != "204" ]; then
             echo "::error::派发失败（HTTP $code）"
@@ -99,5 +112,11 @@ jobs:
             if [ -n "$run_url" ]; then
               echo ""
               echo "运行地址：${run_url}"
+            fi
+            # 只说明「传了参数」，不回显传递的键与值；
+            # 具体替换了哪些配置项，由被派发 run 的 Summary 列出。
+            if [ -n "${OVERRIDES_INPUT:-}" ]; then
+              echo ""
+              echo "> ⚠️ 本次已转发 \`inputs.overrides\`，目标项目的 vars / secrets 会被传入值替换。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

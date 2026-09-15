@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import re
 import sys
 import logging
 from enum import Enum
@@ -15,6 +16,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))  # python/
 sys.path.insert(0, _HERE)                   # 项目自身
 
+from common.dotenv import load_dotenv  # noqa: E402
 from common.logging_config import init_logger  # noqa: E402
 
 
@@ -100,24 +102,39 @@ def log_method(func):
     return wrapper
 
 
+def register_masks(values: List[str]) -> None:
+    """在 GitHub Actions 里把敏感值注册进日志遮蔽列表。
+
+    GitHub 的脱敏只按「完整机密值」做字面匹配，而每个 cookie 只是多行机密
+    COOKIES 里的一行，属于片段 —— 不主动注册的话，日志里出现就是明文。
+    本地运行（无 GITHUB_ACTIONS）直接跳过，避免往 stdout 打噪音。
+    """
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+
+    for value in values:
+        value = (value or "").strip()
+        # 太短的值 GitHub 会拒绝遮蔽，注册了也没用
+        if len(value) >= 4:
+            print(f"::add-mask::{value}", flush=True)
+
+
 class Config:
     """应用配置"""
 
     ENV_PUSH_KEY = "PUSHDEER_SENDKEY"
-    ENV_COOKIES = "GLADOS_COOKIES"
+    ENV_COOKIES = "COOKIES"
+    ENV_DOMAINS = "DOMAINS"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
 
-    """默认兑换计划"""
-    DEFAULT_EXCHANGE_PLAN = "plan500"
+    """不兑换：GLADOS_EXCHANGE_PLAN 留空即表示明确不兑换"""
+    NO_EXCHANGE = ""
 
     """默认是否输出详细响应"""
     DEFAULT_VERBOSE = False
 
-    """签到域名"""
-    DOMAIN = "glados.cloud"
-
-    """兑换计划列表"""
+    """兑换计划列表（值 = 需要多少积分，仅用于日志展示）"""
     EXCHANGE_PLANS = {
         ExchangePlan.PLAN100.value: 100,
         ExchangePlan.PLAN200.value: 200,
@@ -126,14 +143,16 @@ class Config:
 
     def __init__(self):
         self.push_key: str = ""
-        self.cookies_list: List[str] = []
-        self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
+        # [(域名, cookie), ...]：两个配置项按行一一对应
+        self.accounts: List[Tuple[str, str]] = []
+        self.exchange_plan: str = self.NO_EXCHANGE
         self.verbose: bool = self.DEFAULT_VERBOSE
         self._load_config()
 
     def _load_config(self) -> None:
         """加载配置"""
         push_key_env: Optional[str] = os.environ.get(self.ENV_PUSH_KEY)
+        raw_domains_env: Optional[str] = os.environ.get(self.ENV_DOMAINS)
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
@@ -144,28 +163,50 @@ class Config:
         else:
             self.push_key = push_key_env
 
-        if not raw_cookies_env:
-            logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
-            self.cookies_list = []
-        else:
-            self.cookies_list = [cookie.strip() for cookie in raw_cookies_env.split("&") if cookie.strip()]
-            if not self.cookies_list:
-                raise ValueError(f"环境变量 '{self.ENV_COOKIES}' 已设置，但未包含任何有效的 Cookie。")
+        # ── 域名与 Cookie：按行一一对应 ──
+        # 域名用「空白 / 逗号」切分（域名里不可能出现这些字符）；
+        # Cookie 严格按行切分 —— 换行是唯一保证不会出现在 cookie 里的字符
+        # （HTTP header 值不允许 CR/LF）。用 splitlines() 而不是 split("\n")，
+        # 这样多行 secret 里混进 CRLF 时不会残留 \r 把 cookie 弄坏。
+        domains = [item for item in re.split(r"[\s,]+", (raw_domains_env or "").strip()) if item]
+        cookies = [item.strip() for item in (raw_cookies_env or "").splitlines() if item.strip()]
 
-        if not exchange_plan_env:
-            logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 未设置，将使用默认兑换计划 {self.DEFAULT_EXCHANGE_PLAN}。")
-            self.exchange_plan = self.DEFAULT_EXCHANGE_PLAN
-        else:
-            if exchange_plan_env in self.EXCHANGE_PLANS:
-                self.exchange_plan = exchange_plan_env
-                logger.info(f"{LogEmoji.SUCCESS} 使用指定的兑换计划: {self.exchange_plan}")
-            else:
-                logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 的值 '{exchange_plan_env}' 无效，将使用默认兑换计划 {self.DEFAULT_EXCHANGE_PLAN}。")
-                self.exchange_plan = self.DEFAULT_EXCHANGE_PLAN
+        if not domains:
+            logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_DOMAINS}' 未设置。")
+        if raw_cookies_env and not cookies:
+            raise ValueError(f"环境变量 '{self.ENV_COOKIES}' 已设置，但未包含任何有效的 Cookie。")
+        if len(domains) != len(cookies):
+            raise ValueError(
+                f"域名与 Cookie 数量不一致：'{self.ENV_DOMAINS}' 有 {len(domains)} 行、"
+                f"'{self.ENV_COOKIES}' 有 {len(cookies)} 行，两者必须按行一一对应"
+                "（同一个域名有多个账号时，重复写域名即可）。"
+            )
 
-        logger.info(f"{LogEmoji.INFO} 共加载了 {len(self.cookies_list)} 个 Cookie 用于签到。")
+        self.accounts = list(zip(domains, cookies))
+        # cookie 只是多行机密 COOKIES 的片段，不主动注册就会以明文出现在日志里
+        register_masks([cookie for _domain, cookie in self.accounts])
+
+        if not exchange_plan_env or not exchange_plan_env.strip():
+            logger.warning(
+                f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 未设置，"
+                "本次不执行兑换（留空即明确表示不兑换）。"
+            )
+            self.exchange_plan = self.NO_EXCHANGE
+        elif exchange_plan_env in self.EXCHANGE_PLANS:
+            self.exchange_plan = exchange_plan_env
+            logger.info(f"{LogEmoji.SUCCESS} 使用指定的兑换计划: {self.exchange_plan}")
+        else:
+            logger.warning(
+                f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 的值 '{exchange_plan_env}' 无效"
+                f"（可选：{' / '.join(self.EXCHANGE_PLANS)}），本次不执行兑换。"
+            )
+            self.exchange_plan = self.NO_EXCHANGE
+
+        logger.info(f"{LogEmoji.INFO} 共加载了 {len(self.accounts)} 组 域名 / Cookie 用于签到。")
+        for idx, (domain, _cookie) in enumerate(self.accounts, 1):
+            logger.info(f"{LogEmoji.INFO}   #{idx} {LogEmoji.DOMAIN} {domain}")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}。")
-        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan}。")
+        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan or '（不兑换）'}。")
 
         if verbose_env is not None:
             verbose_env_lower = verbose_env.lower()
@@ -436,14 +477,14 @@ class Checker:
 
     def checkin_all(self):
         """执行所有签到任务"""
-        domain = self.config.DOMAIN
-        cookie_count = len(self.config.cookies_list)
+        accounts = self.config.accounts
+        total = len(accounts)
 
-        logger.info(f"{LogEmoji.INFO} 共 {cookie_count} 个 Cookie, 域名: {domain}")
+        logger.info(f"{LogEmoji.INFO} 共 {total} 组 域名 / Cookie")
 
-        for cookie_idx, cookie in enumerate(self.config.cookies_list, 1):
-            logger.info(f"{LogEmoji.START} ========== 开始处理 Cookie {cookie_idx} ==========")
-            logger.info(f"{LogEmoji.INFO} ----- 任务 {cookie_idx}/{cookie_count}: {LogEmoji.COOKIE}[{cookie_idx}] on {LogEmoji.DOMAIN}[{domain}] -----")
+        for cookie_idx, (domain, cookie) in enumerate(accounts, 1):
+            logger.info(f"{LogEmoji.START} ========== 开始处理第 {cookie_idx} 组 ==========")
+            logger.info(f"{LogEmoji.INFO} ----- 任务 {cookie_idx}/{total}: {LogEmoji.COOKIE}[{cookie_idx}] on {LogEmoji.DOMAIN}[{domain}] -----")
 
             result = self._checkin_on_domain(cookie, cookie_idx, domain)
             self.results.append(result)
@@ -476,15 +517,19 @@ class Checker:
             points_str, points_num = api.get_points(cookie)
             result.points_total = points_str
 
-            # 4. 执行兑换
-            required_points = self.config.EXCHANGE_PLANS.get(self.config.exchange_plan, 500)
-            self._log(
-                cookie_idx,
-                domain,
-                LogEmoji.EXCHANGE,
-                f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
-            )
-            result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
+            # 4. 执行兑换：只有配了兑换计划才做（留空 = 明确不兑换）
+            if not self.config.exchange_plan:
+                self._log(cookie_idx, domain, LogEmoji.EXCHANGE, "未配置兑换计划，跳过兑换")
+                result.exchange = "未兑换"
+            else:
+                required_points = self.config.EXCHANGE_PLANS.get(self.config.exchange_plan, 0)
+                self._log(
+                    cookie_idx,
+                    domain,
+                    LogEmoji.EXCHANGE,
+                    f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
+                )
+                result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
 
         return result
 
@@ -505,13 +550,14 @@ class Checker:
         send_content_lines = []
         log_content_lines = []
         for i, res in enumerate(results, 1):
-            line = f"#{i} P:{res['points']} 剩余:{res['days']} 总积分:{res['points_total']} | {res['status']} | {res['exchange']}"
+            # 结果可能跨多个域名，行首带上域名才分得清
+            line = f"#{i} [{res['domain']}] P:{res['points']} 剩余:{res['days']} 总积分:{res['points_total']} | {res['status']} | {res['exchange']}"
             send_content_lines.append(line)
 
             if self.config.verbose:
                 log_line = line
             else:
-                log_line = f"#{i} {res['status']}"
+                log_line = f"#{i} [{res['domain']}] {res['status']}"
             log_content_lines.append(log_line)
 
         content = "\n".join(send_content_lines)
@@ -525,12 +571,17 @@ logger = init_logger("glados_checkin")
 
 def main():
     """主函数"""
+    config: Optional[Config] = None
+
     try:
         # 1. 加载配置
         logger.info(f"{LogEmoji.START} 步骤 1: 加载配置")
+        # .env 是最低优先级的一层：只填补 ref / vars / secrets 都没提供的键。
+        # 必须排在 Config() 之前 —— 它读的就是 os.environ。
+        load_dotenv(os.path.join(_HERE, ".env"), logger=logger)
         config = Config()
 
-        if not config.cookies_list:
+        if not config.accounts:
             logger.error(f"{LogEmoji.ERROR} 未找到有效的 Cookie, 退出程序。")
             title, content = "# 未找到 cookies!", ""
         else:
@@ -549,9 +600,13 @@ def main():
         title, content, log_content = "# 脚本执行出错", str(e), str(e)
 
     # 4. 发送推送
+    #    Config() 本身失败时（比如域名与 Cookie 行数不一致）没有可用的 config，
+    #    直接构造 PushService 会抛 AttributeError，把真正的报错盖掉。
     logger.info(f"{LogEmoji.START} 步骤 4: 发送推送")
-    push_service = PushService(config if "config" in locals() else "")
-    push_service.send(title, content)
+    if isinstance(config, Config):
+        PushService(config).send(title, content)
+    else:
+        logger.error(f"{LogEmoji.ERROR} 配置未成功加载，跳过推送（原因见上方日志）。")
     logger.info(f"{LogEmoji.END} 签到完成")
 
 
