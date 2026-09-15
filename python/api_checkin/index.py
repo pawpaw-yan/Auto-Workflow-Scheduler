@@ -33,13 +33,12 @@
 #   ② 行格式 —— 写进 Environment secret 时推荐
 #        <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
 #
-# ref 层的优先级由本脚本自己保证（见 _ref_overrides），不依赖
-# 「GITHUB_ENV 能否覆盖 workflow env 同名变量」那个未文档化的 runner 行为。
+# 配置来源（优先级从高到低）：ref > vars / secrets > <项目目录>/.env
+# ref 层完全由通用脚本 common/apply-overrides.sh 实现（写进 $GITHUB_ENV），
+# 本脚本不做任何特殊处理 —— 和 glados_checkin / oracle-abc 走的是同一条路。
 #
 # ⚠️ 用 ref 传凭证等同于公开：workflow_dispatch 的 inputs 不受脱敏保护，
 #    公开仓库的 run 详情页任何人都能看到。详见 README 的「用 ref 传账号」。
-#
-# 配置来源（优先级从高到低）：ref > vars / secrets > <项目目录>/.env
 #
 # 退出码：
 #   0  跑完了（含签到失败、重复签到这类业务结果）
@@ -91,9 +90,6 @@ ENV_TIMEOUT = "API_TIMEOUT"
 # common/apply-overrides.sh 写进来的「本次被 ref 覆盖了哪些项」（空格分隔的名字）。
 # 只用于提醒，不参与逻辑判断。
 ENV_OVERRIDE_APPLIED = "OVERRIDE_APPLIED"
-
-# ref 层原始值（workflow_dispatch 的 inputs.overrides）
-ENV_OVERRIDES = "OVERRIDES"
 
 SELF_PATH = "/api/user/self"
 CHECKIN_PATH = "/api/user/checkin"
@@ -187,42 +183,6 @@ def _warn_if_from_ref() -> None:
 
 
 # ─────────────────────────── 配置 ───────────────────────────
-def _ref_overrides() -> Dict[str, object]:
-    """解析 ref 层（workflow_dispatch 的 `inputs.overrides`）。
-
-    **为什么不直接读 `apply-overrides.sh` 写进 GITHUB_ENV 的结果？**
-    因为「`GITHUB_ENV` 能否覆盖 workflow `env:` 里的同名变量」是 runner 的
-    **未文档化行为**（官方文档只写了 GITHUB_ENV 对后续步骤可见，没写冲突时谁赢），
-    不能拿它保证 ref 真的生效。这里由脚本自己把 ref 读出来，优先级判定才是确定的。
-
-    这样无论 GITHUB_ENV 最后有没有覆盖成功，ref 都一定赢 —— 两条路都通向同一个结果。
-    """
-    raw = (os.environ.get(ENV_OVERRIDES) or "").strip()
-    if not raw:
-        return {}
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # 格式不对由 common/apply-overrides.sh 负责报错并中止，这里不重复报
-        return {}
-
-    return data if isinstance(data, dict) else {}
-
-
-def _pick(overrides: Dict[str, object], name: str) -> str:
-    """取一个配置项：**ref 优先**，其次进程环境变量（= vars / secrets / .env）。
-
-    值允许直接写成对象或数组（比如 SITES 的 JSON 结构），这样派发时少一层转义；
-    非字符串统一用 `json.dumps` 压成单行字符串再交给下面解析。
-    """
-    if name in overrides:
-        value = overrides[name]
-        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-
-    return os.environ.get(name) or ""
-
-
 @dataclass
 class Account:
     """一个「站点 + 账号」任务"""
@@ -426,12 +386,14 @@ class Config:
     def load(cls) -> "Config":
         config = cls()
 
-        # ref 层单独取出来，所有配置项都走 _pick：ref 优先，其次 vars / secrets / .env
-        overrides = _ref_overrides()
-
-        raw_sites = _pick(overrides, ENV_SITES).strip()
+        # 直接读进程环境：ref 已由 common/apply-overrides.sh 写进 $GITHUB_ENV，
+        # 和 vars / secrets / .env 一起，走到这里全都躺在 os.environ 里了。
+        raw_sites = (os.environ.get(ENV_SITES) or "").strip()
         if not raw_sites:
-            logger.warning(f"{LogEmoji.WARNING} 配置项 '{ENV_SITES}' 为空（ref 与环境变量都没给）。")
+            logger.warning(
+                f"{LogEmoji.WARNING} 配置项 '{ENV_SITES}' 为空"
+                "（ref / vars / secrets / .env 都没给）。"
+            )
 
         # 以 { 开头就当 JSON 形式（ref 传参推荐这种，见 README）；
         # 否则按「一行一个账号」解析（secret 里推荐的写法）。
@@ -445,15 +407,15 @@ class Config:
 
         _warn_if_from_ref()
 
-        config.push_key = _pick(overrides, ENV_PUSH_KEY).strip()
+        config.push_key = (os.environ.get(ENV_PUSH_KEY) or "").strip()
 
-        raw_timeout = _pick(overrides, ENV_TIMEOUT).strip()
+        raw_timeout = (os.environ.get(ENV_TIMEOUT) or "").strip()
         if raw_timeout:
             if not raw_timeout.isdigit() or int(raw_timeout) <= 0:
                 raise ConfigError(f"{ENV_TIMEOUT} 必须是正整数秒数，当前值：'{raw_timeout}'")
             config.timeout = int(raw_timeout)
 
-        verbose_env = _pick(overrides, ENV_VERBOSE).strip()
+        verbose_env = (os.environ.get(ENV_VERBOSE) or "").strip()
         if verbose_env:
             lowered = verbose_env.lower()
             if lowered in ("true", "1", "yes", "y"):

@@ -148,9 +148,15 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ### ref 一定赢
 
-`ref > vars/secrets > .env` 这个顺序是**脚本自己保证**的，不依赖
-「`GITHUB_ENV` 能不能覆盖 workflow `env:` 同名变量」—— 那是 runner 的**未文档化行为**
-（官方只说 GITHUB_ENV 对后续步骤可见，没说冲突时谁赢），不能拿来当保证。
+`ref > vars/secrets > .env` 由 `common/apply-overrides.sh` 统一实现，**本项目没有任何特殊处理** ——
+它把 ref 的值写进 `$GITHUB_ENV`，后续所有 step 读到的就是新值，和另外两个项目走的是同一条路。
+
+> **为什么 `$GITHUB_ENV` 能压掉 workflow `env:` 里的同名变量？** 官方文档没写这条，
+> 但从 runner 源码可以确认：job 级 `env:` 和 `$GITHUB_ENV` 写的是**同一个**
+> `Global.EnvironmentVariables` 字典，而 `$GITHUB_ENV` 在该 step **结束后**才处理 → 后写覆盖先写。
+>
+> ⚠️ 唯一能压过 `$GITHUB_ENV` 的是 **step 级 `env:`**（组装 step 环境时最后合并）。
+> 所以**不要在 `Run` 那一步写 `env: {SITES: ...}`**，否则参数覆盖会被**静默吃掉**。
 
 ---
 

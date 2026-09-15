@@ -36,6 +36,9 @@ name: api_checkin
 # 由 Python 侧在运行期读取（python/common/dotenv.py），不在 workflow 里体现。
 # 被替换 / 被补入的项都只在日志与 Job Summary 里列**名字**，不回显值。
 #
+# ⚠️ 别在某个 step 的 env: 里声明上面的配置键 —— step 级 env 会压过 $GITHUB_ENV，
+#    让 inputs.overrides 静默失效（不报错，只是不生效）。原理见根 README §11.1。
+#
 # 通用逻辑全部在 common/*.sh，本文件只做「声明」：
 #   common/install-deps.sh     依赖安装（按 LANG_NAME 分支）
 #   common/apply-overrides.sh  ref 层：应用 inputs.overrides

@@ -303,6 +303,13 @@ fi                             # 空 / 未设置 → 由 .env 补上
 因为 ①② 走到这一步都已经在进程环境里了，「只填空位」天然就等于这个优先级，不需要额外排序。
 附带好处：`.env` 不可能改坏 `PATH`、`GITHUB_*` 这类运行时变量（它们永远非空）。
 
+> **① 压过 ② 的原理**：`apply-overrides.sh` 把 ref 的值写进 `$GITHUB_ENV`，而 job 级 `env:` 和它写的是
+> **同一个**环境变量字典，且 `$GITHUB_ENV` 在那个 step **结束后**才被处理 → 后写覆盖先写。
+> 官方文档没写这条，结论来自 runner 源码（展开在 [11.1](#111-通用层-common)）。
+>
+> ⚠️ **唯一能压过 `$GITHUB_ENV` 的是 step 级 `env:`** —— 所以别在 `Run` 那一步写 `env:` 声明同名键，
+> 否则参数覆盖会被**静默吃掉**（不报错，只是不生效）。
+
 > ⚠️ **「空字符串」被当作「没配置」**：GitHub 上把某个 Variable 留空或不建时，`${{ vars.X }}` 会展开成空字符串，
 > 这个键就交给 `.env` 了。代价是**没法显式表达「这个键就是要空着」**。
 > 只在本地跑（或自建 runner 保留了 `.env`）时才需要留意 —— CI 是干净检出，根本没有这个文件。
@@ -639,6 +646,18 @@ Actions 页面会满屏红色，真正的异常反而看不出来。
 | `apply-overrides.sh` | 参数覆盖（最高优先级）：把 `inputs.overrides` 注入本次运行 | 每个项目都跑（没传参数则跳过） |
 | `execute.sh` | 按入口扩展名执行脚本，输出 `tee` 到 `output.log` | 每个项目都跑 |
 | `render-summary.sh` | 把 `output.log` 渲染成 Job Summary | 每个项目都跑（建议 `if: always()`） |
+
+> **为什么 `apply-overrides.sh` 写 `$GITHUB_ENV` 就能压过项目 workflow 里的 `env:`？**
+> 官方文档只说了 `$GITHUB_ENV` 对后续 step 可见，**没写**冲突时谁赢。runner 源码里是确定的：
+>
+> 1. job 级 `env:` → `JobExtension.InitializeJob` 写进 `context.Global.EnvironmentVariables`
+> 2. `$GITHUB_ENV` → `FileCommandManager` 的 `SetEnvFileCommand` 写进**同一个** `Global.EnvironmentVariables`，
+>    而且是在那个 step **结束后**才处理 → **后写覆盖先写**
+> 3. 每个 step 组装环境时（`StepsRunner.RunAsync`）先铺这个字典，**最后**才合并 step 级 `env:`
+>
+> 所以真实优先级是 `step 级 env > $GITHUB_ENV > job / workflow 级 env`。
+> `apply-overrides.sh` 是**独立的一个 step**，所以它天然拿下 `vars` / `secrets`，
+> 三个项目共用这一条机制，谁都不需要自己再读一遍 ref。
 
 ### 11.2 workflow
 
