@@ -1074,7 +1074,12 @@
         return;
       }
       const me = state.me || {};
-      const cookieCount = state.cookie ? state.cookie.split(";").filter((s) => s.trim()).length : 0;
+      const cookieSegments = state.cookie
+        ? state.cookie.split(";").map((s) => s.trim()).filter((s) => s)
+        : [];
+      const cookieCount = cookieSegments.length;
+      // 列出**名字**：能一眼看出「为什么偏偏是这几条、缺的那几条去哪了」
+      const cookieNames = cookieSegments.map((s) => s.split("=")[0]).join("、");
       const rows = [
         ["站点", state.origin],
         ["账号", "#" + (me.id || "?") + " " + (me.username || me.display_name || "")],
@@ -1082,10 +1087,11 @@
         ["会话", "✅ 有效（已用 /api/user/self 验证）"],
         ["GM_cookie", gmStateLabel(state)],
         ["Cookie", state.sessionVisible
-          ? "✅ 读到会话 cookie（来源 " + state.cookieSource + "，" + cookieCount + " 条）"
+          ? "✅ 读到会话 cookie（来源 " + state.cookieSource + "，" + cookieCount + " 条：" + cookieNames + "）"
           : cookieCount
-            ? "⚠️ 只读到 " + cookieCount + " 条非会话 cookie（来源 " + state.cookieSource
-              + "）；会话 cookie 是 httpOnly —— 见上面 GM_cookie 那一行"
+            ? "⚠️ 只读到 " + cookieCount + " 条：" + cookieNames + "（来源 " + state.cookieSource + "）。"
+              + "这些是**页面 JS 写的**所以 JS 可见；session 这类是服务端 HttpOnly 写的，JS 读不到"
+              + " —— 见上面 GM_cookie 那一行"
             : "⛔ 一条 cookie 都读不到（来源 " + state.cookieSource + "）—— 见上面 GM_cookie 那一行"],
       ];
       rows.forEach((row) => {
