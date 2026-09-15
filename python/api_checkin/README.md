@@ -83,7 +83,7 @@ https://another-site.org|dav|cookie|session=eyJhbGciOi...; new-api-session=abc12
 | 站点地址 | 必须带 `http://` 或 `https://`；结尾的 `/` 可有可无 |
 | 账号标签 | 自己起的名字，只出现在日志和推送里，用来区分同一个站点的多个号 |
 | 认证类型 | `cookie` 或 `token`；写成 `token=<用户ID>` 会额外带上 `New-Api-User` 头 |
-| 凭证 | cookie 或 `sk-` 令牌本身 |
+| 凭证 | cookie 或令牌本身。⚠️ **令牌不以 `sk-` 开头也完全正常** —— 类型段写了 `token` 就按令牌处理 |
 
 **凭证放最后一段是刻意的** —— 解析时对它只做一次 `split("|", 3)`，
 所以凭证里真的出现 `|` 也不会被切断。
@@ -115,23 +115,128 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ## 用 ref 传账号（可选，但请先读警告）
 
-派发时把整个账号表塞进 `inputs.overrides.SITES`，就不用去网页改 Secret 了：
+派发时把整个账号表塞进 `inputs.overrides.SITES`，就不用去网页改 Secret 了。
+
+**你真正要写的就是下面这段**（这就是 `overrides` 的值）：
 
 ```json
-{"ref":"main","inputs":{"overrides":"{\"SITES\":{\"https://a.com\":[\"session=xxx\",\"sk-yyy\"],\"https://b.com\":[{\"token\":\"sk-zzz\",\"user_id\":\"1001\"}]}}"}}
+{
+  "SITES": {
+    "https://a.com": {
+      "cookies": ["session=xxx"],
+      "tokens":  ["aNSC....Y/8", {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]
+    },
+    "https://b.com": {"tokens": ["sk-qqq"]}
+  }
+}
 ```
 
-**结构就是「站点 → 账号数组」**，数组里 cookie 和令牌可以混着写：
+**结构：站点 → 分桶 → 凭证数组。** 桶名就是类型：
 
-| 数组元素 | 含义 |
+| 桶 | 桶内元素一律当 |
 |---|---|
-| `"session=xxx"` | 字符串。含 `=` 且不以 `sk-` 开头 → 当 **cookie** |
-| `"sk-yyy"` | 字符串，`sk-` 开头 → 当**令牌** |
-| `"cookie:任意值"` | 加前缀**强制**当 cookie（自动判断不出来时用） |
-| `"token:任意值"` | 加前缀**强制**当令牌 |
-| `{"token": "sk-zzz", "user_id": "1001", "label": "小号"}` | 对象，可以带用户 ID 和标签 |
+| `cookies` | **cookie** |
+| `tokens` | **令牌** |
 
-站点只挂一个账号时，值也可以直接写成字符串：`{"https://a.com": "sk-xxx"}`。
+两个桶都可选，至少一个非空（写 `[]` 或直接省略都行）；一个站点挂几个号就放几个元素。
+
+> **分桶的意义**：桶名已经声明了类型，所以**桶内裸写凭证，不做任何猜测** ——
+> 令牌不以 `sk-` 开头也无所谓，更不需要写 `token:` 前缀。
+
+### 桶内什么时候要写成对象？
+
+**只有两个需求**：带用户 ID，或带标签。
+
+```json
+{"token": "sk-zzz", "user_id": "1001", "label": "小号"}
+```
+
+| 字段 | 是什么 | 从哪来 / 什么时候要 |
+|---|---|---|
+| `token` | **就是页面上那一串** | 「个人设置 → 安全设置 → 系统访问令牌」，原样复制。**没有别的附加内容** |
+| `user_id` | 你的**用户 ID**，是一个**数字**，不是令牌的一部分 | 令牌认证时 new-api 管理接口要求 `New-Api-User: <用户ID>`，官方文档原文是「**{user_id} 必须与当前登录用户匹配**」。不填有的站点直接 401，而报错看着像「令牌错了」，极难排查。**cookie 认证用不上它** |
+| `label` | **你自己起的备注名** —— 站点上根本没有这个概念 | **纯展示**，出现在日志和推送里（`#1 [主号] token \| +500 \| 余额 12,345 \| ok`）。一个站点只挂一个号时完全不用写 |
+
+> **`user_id` 在哪找？** ①「个人设置」页（有的版本会显示）；② 管理员在「用户管理」列表里能看到；
+> ③ **最省事**：先用 cookie 认证跑一次 —— 脚本调 `/api/user/self` 时会顺手把你的用户 ID 打进日志。
+
+所以**页面上你能拿到的只有那串字符串**。只挂一个号、又不需要 `user_id` 时，桶内全是裸字符串：
+
+```json
+{"SITES":{"https://你的站点":{"tokens":["粘贴页面那一串"]}}}
+```
+
+**怎么把它送进去 —— 三种入口，前两种不需要你手写任何转义：**
+
+**① `gh` CLI（推荐，最省事）**
+
+```bash
+gh workflow run api_checkin.yml \
+  -f overrides='{"SITES":{"https://a.com":{"tokens":["aNSC....Y/8"]}}}'
+```
+
+外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
+走总入口就把工作流换成 `run-project.yml` 并加 `-f project=api_checkin`。
+
+> ⚠️ 单引号里不能再出现 `'`。cookie 和令牌都不会有它；
+> 真遇到就从文件读：`gh workflow run api_checkin.yml -f overrides="$(jq -c '{SITES:.}' sites.json)"`。
+
+**② Actions 页面 → Run workflow**
+
+`overrides` 输入框里**直接粘上面那段**，不转义、不带外层。就是纯文本框，你输入什么就是什么。
+
+**③ 只能自己拼 HTTP body 时（cron-job.org 这类）**
+
+这种场景**避不开转义**，因为 `inputs.overrides` 在 workflow 里声明的是 `type: string`：
+
+```json
+{"ref":"main","inputs":{"overrides":"{\"SITES\":{\"https://a.com\":{\"tokens\":[\"aNSC....Y/8\"]}}}"}}
+```
+
+别手写，交给 `jq` 生成：
+
+```bash
+body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":["aNSC....Y/8"]}}' \
+        '{ref:"main", inputs:{overrides: ({SITES:$sites} | tojson)}}')
+curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/<owner>/<repo>/actions/workflows/api_checkin.yml/dispatches \
+  -d "$body"
+```
+
+> ⚠️ **必须写成一行**。HTTP body 的 JSON 字符串内部不能出现真换行，
+> 为可读性折行再粘贴，GitHub 会直接返回 **400**（要换行只能写 `\n`）。
+
+> **为什么 ③ 一定要套两层？** 不是文档写得麻烦，是接口本身如此：
+> `workflow_dispatch` 的 inputs 是**字符串通道**，workflow 里那行
+> `OVERRIDES: ${{ inputs.overrides }}` 拿到的只会是字符串 —— 所以对象必须先序列化一遍，
+> 再嵌进 HTTP body。① 和 ② 之所以不用转义，就是因为 `gh` / 网页帮你做了这一步。
+
+### 早期写法：扁平数组（继续支持）
+
+不分桶，cookie 和令牌混在一个数组里，靠自动判断类型 —— 早期文档用的这种：
+
+```json
+{"SITES":{"https://a.com":["session=xxx","sk-yyy"],"https://b.com":[{"token":"sk-zzz","user_id":"1001"}]}}
+```
+
+自动判断是**启发式**，只对 `sk-` 开头的令牌可靠：
+
+| 元素写法 | 判定 |
+|---|---|
+| `"session=xxx"` | 含 `=` → cookie |
+| `"sk-yyy"` | `sk-` 开头 → 令牌 |
+| `"aNSC....Y/8"` | 都不沾 → **报错**，必须写 `token:` 前缀 |
+| `"aNSC...8="` | 含 `=` → **被误判成 cookie**，请求头整个发错 → 401 |
+| `"token:任意值"` / `"cookie:任意值"` | 前缀强制指定 |
+| `{"token": "..."}` / `{"cookie": "..."}` | 对象显式指定 |
+
+> **新配置请用分桶写法** —— 它就是为绕开这张表的坑而存在的。
+> 尤其后两行：新版 New API 的系统访问令牌是随机串，裸写会直接报错，
+> base64 填充结尾的还会被**静默误判**。
+
+站点只挂一个账号时，扁平写法可以省掉数组：`{"https://a.com": "session=xx"}`。
+⚠️ 这个简写走自动判断，非 `sk-` 令牌仍需 `token:` 前缀 —— 那种情况就写
+`{"https://a.com": {"tokens": ["aNSC....Y/8"]}}`。
 
 ### ⚠️ 用 ref 传凭证 = 公开这些凭证
 
@@ -144,7 +249,11 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 | 只图省事，不在乎这些免费站账号被人看到 | 用 ref 传，接着往下看 |
 | 想保密 | 把账号表写进 Environment secret `SITES`（就是上面「一行一个账号」那种格式） |
 
-脚本一旦发现 `SITES` 来自 ref，会主动打一条 `::warning::` 提醒，不会让你忘了这回事。
+用 ref 传 `SITES` 时，run 顶部会**自动出现一条 `::warning::`**，不会让你忘了这回事。
+
+> 这条告警来自**通用层** `common/apply-overrides.sh`，不是本项目的特殊逻辑：
+> 它检查被替换的项里有没有登记在 `SECRET_NAMES` 里的（`SITES` 在里面），有就打。
+> 所以以后给这个项目加任何新的机密项，告警会自动跟着生效，一行代码都不用改。
 
 ### ref 一定赢
 
@@ -166,12 +275,24 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 1. 浏览器登录站点
 2. 进 **个人设置 → 安全设置 → 系统访问令牌**
-3. 生成并复制得到的 `sk-...`
+3. 生成并复制那一串（形如 `aNSC...Y/8` 的随机串**也可能**是 `sk-...`，两种都正常）
 
-对应请求头 `Authorization: Bearer sk-...`。
+对应请求头 `Authorization: Bearer <令牌>`。
 
-> ⚠️ **只有 New API 新版支持这么用。**
-> 老 one-api 和部分 fork 里的 `sk-...` 只是「模型调用 key」，鉴权中间件不认，
+> ⚠️ **这个令牌不一定以 `sk-` 开头** —— 新版 New API 生成的就是随机串。
+> 脚本的自动判断只认 `sk-` 前缀，所以**令牌必须显式指定类型**，否则：
+>
+> | 写法 | 结果 |
+> |---|---|
+> | `"token:aNSC....Y/8"` | ✅ 当令牌（推荐） |
+> | `{"token":"aNSC....Y/8"}` | ✅ 当令牌，还能顺带带 `user_id` |
+> | `"aNSC....Y/8"` 裸写 | ❌ **报错**：判断不出类型 |
+> | `"aNSC...8="` 裸写、恰好以 `=` 结尾 | ❌ **被误判成 cookie**，请求头整个发错 → 401 |
+>
+> 最后一行是真实风险：base64 令牌经常以 `=` 结尾。**别省那几个字符。**
+
+> ⚠️ 另外，**只有 New API 新版支持用访问令牌调用管理接口。**
+> 老 one-api 和部分 fork 里的 `sk-` 只是「模型调用 key」，鉴权中间件不认，
 > 拿它签到会 **401**。这类站点只能用下面的 Cookie 方式。
 
 ### 方式二：会话 Cookie（通用，但会过期）
@@ -267,10 +388,12 @@ https://api.example.com #2 [小号] cookie | repeat
 
 按顺序排查：
 
-1. **令牌复制是否完整** —— `sk-` 后面那一长串都要，别漏字符
-2. **这个站是不是 New API 新版** —— 老 one-api / 部分 fork 的 `sk-` 只是模型调用 key，
-   不能用管理接口，**这类站请改用 cookie**
+1. **令牌复制是否完整** —— 那一长串都要，别漏字符
+2. **类型有没有指定** —— 令牌请显式写 `token:<值>`。裸写且恰好含 `=` 时会被当成 cookie，
+   请求头整个发错，现象同样是 401
 3. **补上用户 ID** —— 把类型段写成 `token=<用户ID>`，会多带一个 `New-Api-User` 头
+4. **这个站是不是 New API 新版** —— 老 one-api / 部分 fork 的 `sk-` 只是模型调用 key，
+   不能用管理接口，**这类站请改用 cookie**
 4. **令牌是否被禁用 / 删除** —— 去站点个人设置里看一眼
 
 ### Cookie 认证报 401 / 403

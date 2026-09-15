@@ -19,16 +19,21 @@ name: api_checkin
 # ── 用 ref 传账号列表（SITES）──
 # 派发时把整个账号表塞进 overrides.SITES 即可，省得去网页改 secret：
 #
-#   {"ref":"main","inputs":{"overrides":
-#     "{\"SITES\":{\"https://a.com\":[\"session=xxx\",\"sk-yyy\"],
-#                  \"https://b.com\":[{\"token\":\"sk-zzz\",\"user_id\":\"1001\"}]}}"}}
+#   {"ref":"main","inputs":{"overrides":"{\"SITES\":{\"https://a.com\":[\"session=xxx\",\"sk-yyy\"],\"https://b.com\":[{\"token\":\"sk-zzz\",\"user_id\":\"1001\"}]}}"}}
+#
+# ⚠️ 上面这行必须是**一行**。HTTP body 里 JSON 字符串内部不能出现真换行 ——
+#    为可读性折行后再粘贴，GitHub 会直接返回 400。
+#    （本地脚本用 jq 解析，而 jq 容忍裸换行，所以本地测通了不代表 HTTP 这层能过。）
+# ⚠️ `overrides` 的值是**字符串**，所以内层 JSON 要先转义再嵌进外层 —— 不是写错了。
+#    反过来，在 Actions 页面「Run workflow」表单里填时只填内层、不要转义。
 #
 # ⚠️⚠️ workflow_dispatch 的 inputs **不是机密，也不受脱敏保护**：
 #     GitHub 会把它原样存进本次 run 的记录，`::add-mask::` 只遮日志、遮不住它。
 #     本仓库是**公开**的，所以任何人打开 run 详情页都能看到你传的 cookie / 令牌。
 #     → 只想图方便、不在乎这些免费站账号被人看到，可以用；
 #     → 想保密就把账号表写进 Environment secret SITES（「一行一个账号」格式）。
-#     脚本在 ref 传了 SITES 时会主动打一条 ::warning:: 提醒。
+#     通用层会自动告警 —— SITES 登记在 SECRET_NAMES 里，apply-overrides.sh
+#     发现它被 ref 替换后会打一条 ::warning::（业务脚本不参与这个判断）。
 #
 # 配置来源优先级（高 → 低）：
 #     ref（inputs.overrides）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env

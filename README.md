@@ -362,6 +362,30 @@ fi                             # 空 / 未设置 → 由 .env 补上
 {"ref":"main","inputs":{"overrides":"{\"DOMAINS\":\"glados.cloud\",\"GLADOS_VERBOSE\":\"true\"}"}}
 ```
 
+**但更推荐用 `gh` CLI 或 Actions 页面 —— 这两种写法都不需要你手写转义。**
+
+`gh` CLI（最省事）：
+
+```bash
+gh workflow run glados_checkin.yml -f overrides='{"DOMAINS":"glados.cloud","GLADOS_VERBOSE":"true"}'
+```
+
+外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
+
+Actions 页面 → **Run workflow** 的 `overrides` 输入框里，直接粘（纯文本框，不转义、不带外层）：
+
+```
+{"DOMAINS":"glados.cloud","GLADOS_VERBOSE":"true"}
+```
+
+> **为什么 `curl` 那种写法要多套一层 `\"`？** 不是文档写得麻烦，是接口本身如此：
+> `workflow_dispatch` 的 inputs 是**字符串通道**，workflow 里那行
+> `OVERRIDES: ${{ inputs.overrides }}` 拿到的只会是字符串 —— 所以对象必须先序列化一遍、
+> 再嵌进 HTTP body。`gh` 和网页帮你做了这一步，所以你不用管。
+>
+> 真要自己拼 body 就交给 `jq` 生成，别手写：
+> `jq -nc --argjson ov '{"DOMAINS":"glados.cloud"}' '{ref:"main",inputs:{overrides:($ov|tojson)}}'`
+
 如果值本身是多行（比如 cookie 列表、域名列表），在 JSON 里用 `\n` 转义：
 
 ```json
@@ -378,6 +402,7 @@ fi                             # 空 / 未设置 → 由 .env 补上
 | 白名单 | 只能覆盖 workflow 里登记过的项（默认取 `SECRET_NAMES` + `VARIABLE_NAMES`，可用 `OVERRIDE_NAMES` 单独指定）。越界直接报错 |
 | 拒绝项 | `GITHUB_*` / `RUNNER_*` 一律拒绝 —— 防止有人通过覆盖把 runner 环境搞坏 |
 | 值不回显 | 日志和摘要里**只列被替换的项名**，绝不显示值 |
+| 机密项告警 | 被替换的项若登记在 `SECRET_NAMES` 里（值是凭据），自动打一条 `::warning::`，摘要里那一行也会标成「⚠️ **机密**」—— ref 传参等于把这些值公开 |
 | 摘要提示 | Job Summary 最上方会出现「本次运行替换了配置项」表格 |
 | 留空 | 不传 / 传空串 / 传 `{}` → 整步跳过，完全使用仓库配置 |
 

@@ -6,11 +6,12 @@
 #
 # 认证（每个账号二选一）：
 #   cookie —— 浏览器登录后的会话 Cookie，形如 `session=xxx` 或 `new-api-session=xxx`
-#   token  —— 「个人设置 → 安全设置 → 系统访问令牌」生成的 `sk-...` 令牌
+#   token  —— 「个人设置 → 安全设置 → 系统访问令牌」生成的那一串
 #
-#   ⚠️ 只有 **New API 新版**支持用访问令牌调用管理接口。
-#      老 one-api / 部分 fork 的 `sk-...` 只是「模型调用 key」，拿它签到会 401，
-#      那类站点只能改用 cookie。
+#   ⚠️ **系统访问令牌不一定是 `sk-` 开头。** 新版生成的是 `aNSC...Y/8` 这类随机串；
+#      `sk-` 开头的通常只是「模型调用 key」，老 one-api / 部分 fork 的 sk- 不能用于管理接口。
+#      下面的自动判断只认 `sk-` 前缀，所以**令牌请一律显式写** `token:<值>`
+#      或 `{"token":"..."}` —— 否则要么直接报错，要么因含 `=` 被误判成 cookie。
 #
 # 用到的两个接口（new-api / one-api 通用）：
 #   GET  /api/user/self     校验凭证 + 读额度
@@ -24,13 +25,16 @@
 #
 # 账号配置 SITES 支持两种写法（以 `{` 开头就当 JSON，否则按行格式解析）：
 #
-#   ① JSON —— 用 ref 传参时推荐
-#        {"https://a.com": ["session=xxx", "sk-yyy", "cookie:session=zzz"],
-#         "https://b.com": [{"token": "sk-qqq", "user_id": "1001", "label": "小号"}]}
-#      键是站点，值是**数组** —— 所以同一个站点挂多少个账号都行。
-#      数组元素可以是字符串（自动判断 cookie / 令牌），也可以是带 label / user_id 的对象。
+#   ① JSON —— 用 ref 传参时推荐。值是「按类型分桶」（推荐）或「扁平数组」（早期写法）
+#        // 分桶：桶名即类型，桶内裸写不猜 —— 所以非 sk- 开头的令牌也能直接用
+#        {"https://a.com": {"cookies": ["session=xxx"],
+#                           "tokens":  ["aNSC...Y/8", {"token": "sk-qqq", "user_id": "1001"}]},
+#         "https://b.com": {"tokens": ["sk-zzz"]}}
+#        // 扁平数组：靠自动判断类型，非 sk- 令牌必须写 `token:` 前缀
+#        {"https://a.com": ["session=xxx", "sk-yyy"]}
+#      数组元素可以是字符串，也可以是对象（对象用来带 user_id / label）。
 #
-#   ② 行格式 —— 写进 Environment secret 时推荐
+#   ② 行格式 —— 写进 Environment secret 时推荐（类型是独立一段，天然无歧义）
 #        <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
 #
 # 配置来源（优先级从高到低）：ref > vars / secrets > <项目目录>/.env
@@ -39,6 +43,8 @@
 #
 # ⚠️ 用 ref 传凭证等同于公开：workflow_dispatch 的 inputs 不受脱敏保护，
 #    公开仓库的 run 详情页任何人都能看到。详见 README 的「用 ref 传账号」。
+#    但**告警由通用层统一发** —— common/apply-overrides.sh 会检查被覆盖的项里
+#    有没有登记在 SECRET_NAMES 的，本脚本不做任何 ref 相关的特殊处理。
 #
 # 退出码：
 #   0  跑完了（含签到失败、重复签到这类业务结果）
@@ -86,10 +92,6 @@ ENV_SITES = "SITES"
 ENV_PUSH_KEY = "PUSHDEER_SENDKEY"
 ENV_VERBOSE = "API_VERBOSE"
 ENV_TIMEOUT = "API_TIMEOUT"
-
-# common/apply-overrides.sh 写进来的「本次被 ref 覆盖了哪些项」（空格分隔的名字）。
-# 只用于提醒，不参与逻辑判断。
-ENV_OVERRIDE_APPLIED = "OVERRIDE_APPLIED"
 
 SELF_PATH = "/api/user/self"
 CHECKIN_PATH = "/api/user/checkin"
@@ -152,34 +154,6 @@ def register_masks(values: List[str]) -> None:
         # 太短的值 GitHub 会拒绝遮蔽，注册了也没用
         if len(value) >= 4:
             print(f"::add-mask::{value}", flush=True)
-
-
-def _warn_if_from_ref() -> None:
-    """SITES 若来自 ref 参数，郑重提醒一次。
-
-    ref 传参很好用（本地改一行、直接派发，不用去网页改 secret），
-    但 workflow_dispatch 的 inputs **不是机密**，会被原样存进本次 run 的记录。
-    """
-    applied = (os.environ.get(ENV_OVERRIDE_APPLIED) or "").split()
-    if ENV_SITES not in applied:
-        return
-
-    # 裸 ::warning:: 必须行首输出，GitHub 才会渲染成 run 顶部的告警
-    print(
-        f"::warning::{ENV_SITES} 来自 ref 参数（inputs.overrides）。"
-        "workflow_dispatch 的 inputs 不是机密、也不受脱敏保护，"
-        "公开仓库的 run 详情页任何人都能看到 —— 请确认这些 cookie / 令牌可以公开。",
-        flush=True,
-    )
-    logger.warning(f"{LogEmoji.WARNING} {ENV_SITES} 来自 ref 参数。ref 传参方便，但**等同于公开**：")
-    logger.warning(
-        f"{LogEmoji.WARNING}   GitHub 会把它原样存进本次 run 的记录，"
-        "`::add-mask::` 只遮日志、遮不住 inputs 本身。"
-    )
-    logger.warning(
-        f"{LogEmoji.WARNING}   想保密就别用 ref 传凭证：改回「一行一个账号」写进 "
-        "Environment secret SITES 即可。"
-    )
 
 
 # ─────────────────────────── 配置 ───────────────────────────
@@ -267,10 +241,15 @@ def _detect_credential(text: str, where: str) -> Tuple[str, str]:
     """判断一个凭证是 cookie 还是访问令牌。
 
     规则按顺序：
-      1. `token:` / `cookie:` 前缀 → 显式指定，优先级最高（兜底用）
-      2. 以 `sk-` 开头 → 令牌（New API 的系统访问令牌就是这个格式）
+      1. `token:` / `cookie:` 前缀 → 显式指定，优先级最高（**令牌推荐走这条**）
+      2. 以 `sk-` 开头 → 令牌
       3. 含 `=` → cookie（cookie 天然是 `名字=值`）
       4. 都判断不出来 → 报错，让人加前缀，**不猜**
+
+    ⚠️ 第 2、3 条只是**启发式**，对「系统访问令牌」并不可靠：新版令牌形如
+    `aNSC...Y/8`，既不以 `sk-` 开头（→ 落到第 4 条报错），
+    也可能因 base64 填充以 `=` 结尾（→ 被第 3 条**误判成 cookie**，请求头发错 → 401）。
+    所以令牌一律显式写 `token:<值>`。
     """
     for prefix, kind in (("token:", AUTH_TOKEN), ("cookie:", AUTH_COOKIE)):
         if text.startswith(prefix):
@@ -283,18 +262,33 @@ def _detect_credential(text: str, where: str) -> Tuple[str, str]:
 
     raise ConfigError(
         f"{where}：判断不出这是 cookie 还是令牌（'{text[:24]}…'）。"
-        "cookie 是 `名字=值` 的形式，令牌以 `sk-` 开头；"
-        "拿不准就加前缀写成 `token:<值>` 或 `cookie:<值>`"
+        "cookie 是 `名字=值` 的形式；令牌只在以 `sk-` 开头时才能自动识别 ——"
+        "系统访问令牌常常不以 `sk-` 开头，请显式写成 `token:<值>`"
     )
 
 
-def _account_from_json(site: str, entry: object, index: int, where: str) -> Account:
-    """JSON 形式里的单个账号。entry 允许是字符串，也允许是对象。"""
+def _account_from_json(
+    site: str,
+    entry: object,
+    index: int,
+    where: str,
+    force_kind: str = "",
+) -> Account:
+    """JSON 形式里的单个账号。entry 允许是字符串，也允许是对象。
+
+    `force_kind` 非空时（**分桶写法**）跳过自动判断，直接按它定类型 ——
+    这正是分桶的意义：桶名已经声明了类型，桶内裸写就没有歧义，
+    `token:` 前缀、`sk-` 启发式、base64 结尾 `=` 被误判成 cookie 这些问题统统用不上。
+    """
     label = ""
     user_id = ""
 
     if isinstance(entry, str):
-        kind, secret = _detect_credential(entry.strip(), where)
+        text = entry.strip()
+        if force_kind:
+            kind, secret = force_kind, text
+        else:
+            kind, secret = _detect_credential(text, where)
     elif isinstance(entry, dict):
         label = str(entry.get("label") or "")
         user_id = str(entry.get("user_id") or "")
@@ -305,6 +299,10 @@ def _account_from_json(site: str, entry: object, index: int, where: str) -> Acco
         else:
             raise ConfigError(
                 f"{where}：对象里必须有 `token` 或 `cookie` 字段之一，当前是 {sorted(entry)}"
+            )
+        if force_kind and kind != force_kind:
+            raise ConfigError(
+                f"{where}：放在 `{force_kind}s` 桶里，对象里却写的是 `{kind}` —— 两边保持一致"
             )
     else:
         raise ConfigError(f"{where}：只能是字符串或对象，当前是 {type(entry).__name__}")
@@ -320,20 +318,34 @@ def _account_from_json(site: str, entry: object, index: int, where: str) -> Acco
 def parse_sites_json(raw: str) -> List[Account]:
     """解析 JSON 形式的 SITES —— 用 ref 传参时用这种。
 
-    结构：
+    值的写法有两种，**推荐分桶**：
+
+    ① 分桶（推荐）—— 桶名即类型，桶内裸写凭证不再有歧义：
 
         {
-          "https://站点A": ["cookie1", "cookie2", "sk-令牌1", "cookie3"],
-          "https://站点B": ["session=xxx"],
-          "https://站点C": [
-            "session=yyy",
-            {"token": "sk-zzz", "user_id": "1001", "label": "小号"}
-          ]
+          "https://站点A": {
+            "cookies": ["session=xxx", "new-api-session=yyy"],
+            "tokens":  ["aNSC...Y/8", {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]
+          },
+          "https://站点B": {"tokens": ["sk-qqq"]}
         }
 
+    ② 扁平数组（早期写法，继续支持）—— 靠自动判断类型：
+
+        {
+          "https://站点A": ["cookie1", "sk-令牌1", "cookie3"],
+          "https://站点C": ["session=yyy", {"token": "sk-zzz", "user_id": "1001"}]
+        }
+
+    两种写法共同的规则：
     - 键是站点地址，必须带 `http://` 或 `https://`
-    - 值是**数组**，一个元素一个账号 —— 所以同一个站点挂多少个账号都行
-    - 元素可以是字符串（自动判断 cookie / 令牌），也可以是对象（额外支持 label / user_id）
+    - 站点只挂一个账号时，值可以写字符串：`{"https://a.com": "session=xx"}`
+    - 数组元素可以是字符串，也可以是对象（对象用来带 `user_id` / `label`）
+
+    分桶专属规则：
+    - 桶名只认 `cookies`（一律当 cookie）和 `tokens`（一律当令牌）—— 桶内**不做自动判断**
+    - 两个桶可任选，至少一个非空；`[]` 或省略都行
+    - `oauth` 允许存在但**必须为空**（不确定它该发什么请求头，宁可不做也不静默 401）
     """
     try:
         data = json.loads(raw)
@@ -358,9 +370,15 @@ def parse_sites_json(raw: str) -> List[Account]:
         if isinstance(entries, str):
             entries = [entries]  # 只挂一个账号时允许写成字符串
 
+        # 分桶写法：{"cookies": [...], "tokens": [...]}
+        if isinstance(entries, dict):
+            accounts.extend(_accounts_from_buckets(site.strip().rstrip("/"), entries, where))
+            continue
+
         if not isinstance(entries, list) or not entries:
             raise ConfigError(
-                f'{where}：值必须是非空数组，例如 ["session=xxx", "sk-yyy"]'
+                f"{where}：值必须是数组或分桶对象 —— "
+                '数组 ["session=xxx", "sk-yyy"]，或分桶 {"cookies": [...], "tokens": [...]}'
             )
 
         for index, entry in enumerate(entries, 1):
@@ -369,6 +387,64 @@ def parse_sites_json(raw: str) -> List[Account]:
                     site.strip().rstrip("/"), entry, index, f"{where} 第 {index} 个账号"
                 )
             )
+
+    return accounts
+
+
+# 分桶写法认的键：桶名（复数）→ 强制类型。dict 插入顺序就是遍历顺序
+BUCKET_KINDS = {f"{AUTH_COOKIE}s": AUTH_COOKIE, f"{AUTH_TOKEN}s": AUTH_TOKEN}
+
+# 认得出、但暂不支持的桶：允许存在，但必须为空
+BUCKET_UNSUPPORTED = ("oauth",)
+
+
+def _accounts_from_buckets(site: str, buckets: dict, where: str) -> List[Account]:
+    """解析「按类型分桶」的写法：`{"cookies": [...], "tokens": [...]}`。
+
+    桶名就是类型，所以桶内**裸写凭证不再有歧义** —— 不需要 `token:` 前缀，
+    也不会出现「非 `sk-` 开头认不出」「base64 结尾的 `=` 被误判成 cookie」这类问题。
+    """
+    unknown = [
+        key for key in buckets
+        if key not in BUCKET_KINDS and key not in BUCKET_UNSUPPORTED
+    ]
+    if unknown:
+        raise ConfigError(
+            f"{where}：不认识的分桶 {unknown}。只支持 `cookies` / `tokens`；"
+            '只想挂一个账号就写成桶里的数组，例如 {"cookies": ["session=xxx"]}'
+        )
+
+    for key in BUCKET_UNSUPPORTED:
+        if buckets.get(key):
+            raise ConfigError(
+                f"{where}：`{key}` 暂不支持 —— 不确定这类令牌该发什么请求头，"
+                "宁可不做也不让你踩静默 401。"
+                "用 OAuth 登录站点后拿到的仍是会话 cookie，请放进 `cookies`"
+            )
+
+    accounts: List[Account] = []
+    seq = 0
+    for key, kind in BUCKET_KINDS.items():
+        entries = buckets.get(key)
+        if entries is None:
+            continue
+        if isinstance(entries, str):
+            entries = [entries]
+        if not isinstance(entries, list):
+            raise ConfigError(f"{where}：`{key}` 必须是数组，当前是 {type(entries).__name__}")
+
+        for nth, entry in enumerate(entries, 1):
+            seq += 1
+            accounts.append(
+                _account_from_json(
+                    site, entry, seq, f"{where} 的 `{key}` 第 {nth} 个", force_kind=kind
+                )
+            )
+
+    if not accounts:
+        raise ConfigError(
+            f"{where}：分桶里一个账号都没有（`cookies` / `tokens` 至少一个非空）"
+        )
 
     return accounts
 
@@ -404,8 +480,6 @@ class Config:
 
         # 凭证只是多行 SITES 的片段，不主动注册就会以明文出现在日志里
         register_masks([account.secret for account in config.accounts])
-
-        _warn_if_from_ref()
 
         config.push_key = (os.environ.get(ENV_PUSH_KEY) or "").strip()
 
@@ -539,10 +613,10 @@ class SiteClient:
         )
         if self.account.kind == AUTH_TOKEN:
             return (
-                "① 令牌是否复制完整（`sk-` 后面那一长串都要）；"
-                "② 该站是不是老 one-api / 部分 fork —— 那类站的 `sk-` 只是模型调用 key，"
-                "不能用于管理接口，得改用 cookie 认证；"
-                "③ 站点要求用户标识头时，把类型段写成 `token=<用户ID>` 再试"
+                "① 令牌是否复制完整；"
+                "② 站点要求用户标识头时，把类型段写成 `token=<用户ID>` 再试；"
+                "③ 该站是不是老 one-api / 部分 fork —— 那类站的 `sk-` 只是模型调用 key，"
+                "不能用于管理接口，得改用 cookie 认证"
                 + suffix
             )
         return "会话 Cookie 可能已过期，重新登录后按 README 的「方式二」再复制一份" + suffix
@@ -614,6 +688,15 @@ def check_account(account: Account, timeout: int, verbose: bool) -> CheckinResul
             # 1. 校验凭证 + 记下签到前的额度
             user = client.get_self()
             result.username = str(user.get("username") or user.get("display_name") or "")
+
+            # 顺手把用户 ID 打出来：令牌认证要带 `New-Api-User` 头时填的就是它，
+            # 而站点页面上并不总显示这个数字 —— 用 cookie 跑一次就能看到。
+            user_id = user.get("id")
+            if user_id is not None:
+                logger.info(
+                    f"{LogEmoji.INFO} {account.display} 用户 ID：{user_id}"
+                    "（令牌认证若报 401，把它填进配置里的 user_id）"
+                )
             result.quota_before = _quota_of(user)
             logger.info(
                 f"{LogEmoji.STATUS} {account.display} 凭证有效"
