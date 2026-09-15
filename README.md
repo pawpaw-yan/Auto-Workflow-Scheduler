@@ -1,6 +1,20 @@
+<div align="center">
+
 # Auto-Workflow-Scheduler
 
 把各种「需要定时跑一次」的小任务，塞进 GitHub Actions 的免费额度里自动执行。
+
+[![stars](https://img.shields.io/github/stars/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=stars&color=yellow&logo=github)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/stargazers)
+[![forks](https://img.shields.io/github/forks/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=forks&color=orange&logo=github)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/forks)
+[![issues](https://img.shields.io/github/issues/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=issues&color=red&logo=github)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/issues)
+[![last commit](https://img.shields.io/github/last-commit/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=last%20commit&color=green&logo=git)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/commits/main)
+[![code size](https://img.shields.io/github/languages/code-size/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=code%20size&color=blue)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler)
+[![license](https://img.shields.io/github/license/pawpaw-yan/Auto-Workflow-Scheduler?style=flat&label=license&color=green&logo=opensourceinitiative&logoColor=white)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/blob/main/LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![Shell](https://img.shields.io/badge/Shell-bash-4EAA25?style=flat&logo=gnubash&logoColor=white)](https://www.gnu.org/software/bash/)
+[![Actions](https://img.shields.io/badge/GitHub%20Actions-enabled-2088FF?style=flat&logo=githubactions&logoColor=white)](https://github.com/pawpaw-yan/Auto-Workflow-Scheduler/actions)
+
+</div>
 
 比如：每天自动签到领积分、盯着一台总是缺货的免费云服务器一直抢。
 它们都只需要偶尔跑一下、跑完就结束，用一台常驻服务器太浪费 —— 这个仓库就是干这个的。
