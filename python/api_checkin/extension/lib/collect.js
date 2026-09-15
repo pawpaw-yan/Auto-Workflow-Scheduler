@@ -31,10 +31,6 @@ async function collectSite(site, manualUserId) {
     if (cached && cached.id) userId = cached.id;
   }
   if (hasV1Refresh || !userId) {
-    const cached = await readSiteLocalStorage(site);
-    if (cached && cached.id) userId = cached.id;
-  }
-  if (!userId) {
     const boot = await bootstrapV1Auth(site);
     if (boot && boot.ok) {
       bundle = { user: boot.user, access_token: boot.access_token || "" };

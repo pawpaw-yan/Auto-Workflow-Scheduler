@@ -71,4 +71,4 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-byId("coreVersion").textContent = "扩展 v1.3.6";
+byId("coreVersion").textContent = "扩展 v1.3.7";
