@@ -600,6 +600,7 @@ class SiteClient:
         self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update(self._build_headers())
+        self._v1_tried = False   # v1.x auth/refresh 自举每账号只试一次
         # Cookie 放进会话的 cookie 罐而不是 Cookie 头：requests 在罐里有 cookie 时
         # 会用罐里的内容整个覆盖 Cookie 头 —— 下面过 WAF 挑战要往罐里种
         # acw_sc__v2，静态会话要是还在头里就会被这一下冲掉。
@@ -646,13 +647,9 @@ class SiteClient:
         except requests.exceptions.RequestException as exc:
             raise RequestError(f"网络错误：{exc}") from exc
 
-    def request(self, method: str, path: str) -> dict:
-        """发一个请求并返回解析后的 JSON。失败一律抛异常，由上层归类。"""
-        url = f"{self.account.site}{path}"
-        response = self._send(method, url)
-
-        # 命中阿里云 WAF 的 JS 挑战时自己算 acw_sc__v2、种进罐再重试。
-        # 最多解两轮 —— 个别部署会连着出两道；解不动就落到下面的正常报错。
+    def _solve_waf(self, method: str, url: str, response):
+        """命中阿里云 WAF 的 JS 挑战时自己算 acw_sc__v2、种进罐再重试。
+        最多解两轮 —— 个别部署会连着出两道；解不动就原样返回、落到正常报错。"""
         for _ in range(2):
             arg1 = acw_challenge_arg1(response.text or "")
             if not arg1:
@@ -661,6 +658,45 @@ class SiteClient:
                 self._log(LogEmoji.STATUS, "命中 WAF 挑战页，已解出 acw_sc__v2，重试")
             self.session.cookies.set(ACW_COOKIE, acw_sc__v2_of(arg1))
             response = self._send(method, url)
+        return response
+
+    def _try_v1_bootstrap(self) -> bool:
+        """new-api v1.x 把认证改成了轮换 Bearer 令牌（用户信息只在内存），
+        会话 cookie 直接调管理接口只会 401。与站点前端同一逻辑：
+        POST /api/user/auth/refresh（罐里的刷新 cookie 自动带上）换回
+        短时 access_token，之后全部请求走令牌头。失败返回 False、维持原方式。"""
+        try:
+            response = self.session.post(
+                f"{self.account.site}/api/user/auth/refresh", timeout=self.timeout
+            )
+            data = response.json()
+        except (requests.exceptions.RequestException, ValueError):
+            return False   # v0.x 没这个端点（404/HTML），静默跳过
+        bundle = data.get("data") if isinstance(data, dict) else None
+        token = str((bundle or {}).get("access_token") or "")
+        if not (response.ok and isinstance(data, dict) and data.get("success") and token):
+            return False
+        self.session.headers["Authorization"] = f"Bearer {token}"
+        if self.verbose:
+            self._log(LogEmoji.STATUS, "new-api v1.x：已用 auth/refresh 换取访问令牌")
+        return True
+
+    def _retry_after_v1_bootstrap(self, method: str, url: str, response):
+        """401 且是 cookie 账号时，先试一次 v1.x 自举再放弃（每个账号每轮只试一次）。"""
+        if self.account.kind != AUTH_COOKIE or self._v1_tried:
+            return response
+        self._v1_tried = True
+        if not self._try_v1_bootstrap():
+            return response
+        return self._solve_waf(method, url, self._send(method, url))
+
+    def request(self, method: str, path: str) -> dict:
+        """发一个请求并返回解析后的 JSON。失败一律抛异常，由上层归类。"""
+        url = f"{self.account.site}{path}"
+        response = self._send(method, url)
+        response = self._solve_waf(method, url, response)
+        if response.status_code == 401:
+            response = self._retry_after_v1_bootstrap(method, url, response)
 
         body = (response.text or "").strip()
 

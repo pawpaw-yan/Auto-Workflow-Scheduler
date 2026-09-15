@@ -571,6 +571,12 @@ https://api.example.com #2 [小号] cookie | repeat
 | 返回的 HTML 里是 `<script>var arg1='…';(function(a,c){…`，cookie 里有 `acw_tc` / `acw_sc__v2` | **阿里云 WAF** | ✅ **脚本现在会自动解**（见下），无需任何操作 |
 | 返回 Cloudflare 的挑战页 | Cloudflare | 脚本不跑浏览器，过不去，只能手动签到 |
 
+**new-api v1.x 站**（`/api/status` 的 `version` 是 `v1.*`，如 rc 系列）把认证改成了
+**轮换 Bearer 令牌**，用户信息只在前端内存里 —— 会话 cookie 直接调管理接口会 401。
+脚本的处理：cookie 账号收到 401 时，自动调一次 v1.x 前端同款的
+`POST /api/user/auth/refresh`（罐里的刷新 cookie 自动带上）换回短时 access_token，
+之后全部请求走 `Authorization: Bearer`。最省事的配置仍然是**系统访问令牌**（token 方式）。
+
 **阿里云 WAF 的 `acw_sc__v2` 挑战，脚本已经能自己过**：挑战页让浏览器执行一段 JS，
 把页面里的 40 位 `arg1` 按固定置换表重排、再与固定密钥逐字节异或，结果写进
 `acw_sc__v2` cookie 后重载。`index.py` 检测到这种响应时会**在本地算出这个 cookie、
