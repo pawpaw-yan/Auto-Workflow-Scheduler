@@ -1,12 +1,13 @@
-/* popup.js —— 弹窗的骨架：标签切换、默认站点、通用复制 */
+/* popup.js —— 面板骨架：通用状态行、复制、默认站点、折叠区跳转 */
 
 "use strict";
 
 function byId(id) { return document.getElementById(id); }
 
-/** 面板底部的小状态行：bad=true 红色，空串清空 */
+/** 状态行：bad=true 红色，空串清空 */
 function setStatus(id, message, bad) {
   const box = byId(id);
+  if (!box) return;
   box.textContent = message || "";
   box.classList.toggle("bad", !!bad);
   box.classList.toggle("ok", !bad && !!message);
@@ -35,14 +36,6 @@ async function copyText(text, button) {
   setTimeout(() => { button.textContent = original; }, 1500);
 }
 
-function switchTab(name) {
-  document.querySelectorAll(".tabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  byId("panel-extract").hidden = name !== "extract";
-  byId("panel-sites").hidden = name !== "sites";
-  byId("panel-cron").hidden = name !== "cron";
-  if (name === "sites" && typeof refreshStoredInfo === "function") refreshStoredInfo();
-}
-
 /** GitHub 不是 API 站：面板会在派发页上呼出，别把它的 origin 当站点（否则会去读 GitHub 的 cookie） */
 function isGithubHost(site) {
   try { return /(^|\.)github\.com$/i.test(new URL(site).hostname); }
@@ -61,20 +54,22 @@ async function initDefaultSite() {
   } catch (e) { /* 当前页不是 http(s)，让用户自己填 */ }
 }
 
-document.querySelectorAll(".tabs .tab").forEach((button) => {
-  button.addEventListener("click", () => switchTab(button.dataset.tab));
-});
+/** 深链：content.js 的 iframe 带 ?tab=sites / ?tab=cron 时直接展开对应的折叠区 */
+function switchTab(name) {
+  if (name !== "sites" && name !== "cron") return;
+  const fold = byId(name === "sites" ? "foldSites" : "foldCron");
+  if (!fold) return;
+  fold.open = true;
+  if (name === "sites" && typeof refreshStoredInfo === "function") refreshStoredInfo();
+  fold.scrollIntoView({ block: "start" });
+}
 
 // 通用复制按钮：data-target 指向要复制的输入框 / 文本域
 document.querySelectorAll("button.copy[data-target]").forEach((button) => {
   button.addEventListener("click", () => copyText(byId(button.dataset.target).value, button));
 });
 
-// 深链：content.js 的 iframe 带 ?tab=sites/cron/extract 直达对应面板
-const TAB_NAMES = ["extract", "sites", "cron"];
-switchTab(TAB_NAMES.indexOf(new URLSearchParams(location.search).get("tab")) === -1
-  ? "extract"
-  : new URLSearchParams(location.search).get("tab"));
+switchTab(new URLSearchParams(location.search).get("tab"));
 
 // 焦点在 iframe 内时，外层收不到 keydown —— Esc 在这里转发给外层收起面板
 window.addEventListener("keydown", (e) => {

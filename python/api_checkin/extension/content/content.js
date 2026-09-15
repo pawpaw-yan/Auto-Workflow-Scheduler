@@ -107,7 +107,7 @@
     menu = document.createElement("div");
     menu.className = "acsx-menu";
 
-    [["🔑 提取签到信息", "extract"], ["🧾 SITES JSON", "sites"], ["⏰ 定时任务", "cron"]].forEach((pair) => {
+    [["🔑 签到配置", "extract"], ["📤 SITES 输出", "sites"], ["⏰ 定时任务", "cron"]].forEach((pair) => {
       const item = document.createElement("button");
       item.type = "button";
       item.textContent = pair[0];
