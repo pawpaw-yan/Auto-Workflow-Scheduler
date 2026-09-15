@@ -104,8 +104,9 @@ ENV_TIMEOUT = "API_TIMEOUT"
 
 SELF_PATH = "/api/user/self"
 CHECKIN_PATH = "/api/user/checkin"
-# 部分定制 fork（如「福利站」类）把签到挪出了 /api/user 前缀 —— 404 时按序回退
-CHECKIN_FALLBACK_PATHS = ("/api/checkin",)
+# 部分定制 fork（如「福利站」类）把签到挪出了 /api/user 前缀 —— 404 时按序回退；
+# 还有些站用 sign_in 命名（参考 millylee/anyrouter-check-in 的 provider 配置）
+CHECKIN_FALLBACK_PATHS = ("/api/checkin", "/api/user/sign_in")
 
 AUTH_COOKIE = "cookie"
 AUTH_TOKEN = "token"
