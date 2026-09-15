@@ -519,14 +519,38 @@
      站点前端自己也是从 localStorage 的 user 里读出 id 拼上去的，这里照做。 */
   let currentUserId = "";
 
-  function userIdFromLocalStorage() {
+  function userFromLocalStorage() {
     try {
       const raw = window.localStorage.getItem("user");
       if (raw) {
         const user = JSON.parse(raw);
-        if (user && user.id) return String(user.id);
+        if (user && typeof user === "object") return user;
       }
     } catch (e) { /* 隐私模式 / 值不是 JSON，忽略 */ }
+    return null;
+  }
+
+  function userIdFromLocalStorage() {
+    const user = userFromLocalStorage();
+    return (user && user.id) ? String(user.id) : "";
+  }
+
+  /**
+   * 「系统访问令牌」——个人设置 → 安全设置 → 系统访问令牌 里那一串，
+   * 也就是**管理接口**要的凭证（api_checkin 用的就是它）。
+   *
+   * ⚠️ 它和 `/api/token/` 列出的东西**不是一回事**：后者是 `sk-` 开头的 **API 密钥**，
+   *    给调用模型用的，签到用不上。之前把两者搞混了。
+   *
+   * 站点前端会把用户对象缓存在 localStorage 的 `user` 里，access_token 就在里面；
+   * `/api/user/self` 有的版本也给。两边都试。
+   */
+  function accessTokenFromUser(user) {
+    if (!user || typeof user !== "object") return "";
+    const candidates = [user.access_token, user.accessToken];
+    for (let i = 0; i < candidates.length; i++) {
+      if (typeof candidates[i] === "string" && candidates[i].trim()) return candidates[i].trim();
+    }
     return "";
   }
 
@@ -581,12 +605,6 @@
     return false;
   }
 
-  function tokenKeyOf(token) {
-    const raw = token.key || token.token || token.value || "";
-    if (!raw) return "";
-    return String(raw).indexOf("sk-") === 0 ? String(raw) : "sk-" + raw;
-  }
-
   function listOfTokens(data) {
     if (!data) return [];
     if (Array.isArray(data.data)) return data.data;              // 老 one-api
@@ -629,6 +647,8 @@
       cookie: "",
       cookieSource: "document",
       sessionVisible: false,
+      accessToken: "",
+      userFields: [],
       errors: [],
     };
 
@@ -656,6 +676,10 @@
     }
     result.me = me.data;
     if (result.me.id) currentUserId = String(result.me.id);   // 以服务端返回的为准
+
+    // 「系统访问令牌」：先看 /api/user/self，再退回前端缓存的 user 对象
+    result.accessToken = accessTokenFromUser(result.me) || accessTokenFromUser(userFromLocalStorage());
+    result.userFields = Object.keys(result.me);   // 诊断用：字段名不确定时看这个
 
     try {
       const listed = await api("/api/token/?p=0&size=100");
@@ -692,28 +716,6 @@
     }
   }
 
-  /**
-   * 列表接口把 key 打了码，完整值要单独取：GET /api/token/{id}。
-   * 拿不到（或拿回来还是掩码）就返回空串，由界面提示去站点「令牌」页点复制。
-   */
-  async function fetchFullKey(token) {
-    if (!token || !token.id) return "";
-    try {
-      const res = await api("/api/token/" + token.id);
-      const body = res && res.data;
-      // 各版本这里可能是 { data: {...token...} } 或 { data: { token: {...} } }
-      const item = (body && typeof body === "object" && body.token) || body;
-      const raw = typeof item === "string"
-        ? item
-        : ((item && (item.key || item.token || item.value)) || "");
-      if (!raw) return "";
-      const key = String(raw).indexOf("sk-") === 0 ? String(raw) : "sk-" + raw;
-      return looksMasked(key) ? "" : key;
-    } catch (e) {
-      return "";
-    }
-  }
-
   async function createToken(name, userId) {
     // 形态对齐 one-api / new-api 的 AddToken：永不过期 + 不限额
     const body = JSON.stringify({
@@ -744,6 +746,16 @@
     }
   }
 
+  /** 「重新生成」系统访问令牌。⚠️ 会让旧令牌立刻失效，所以只能挂在明确的按钮后面 */
+  async function regenerateAccessToken() {
+    const data = await api("/api/user/token");
+    if (!data || data.success !== true) {
+      throw new Error((data && data.message) ? data.message : "重新生成失败（响应里没有 success）");
+    }
+    // 有的版本直接把新令牌放在 data 里，没有就回去重新读一次
+    return typeof data.data === "string" ? data.data : "";
+  }
+
   function openExtractor() {
     const ui = makePanel("api_checkin：提取账号");
     const body = ui.body;
@@ -756,14 +768,16 @@
     idInput.value = userIdFromLocalStorage();
     const retryBtn = el("button", { text: "重试" });
 
+    // 「提取到的值」。后两个可编辑 —— 接口不给明文时，把站点 / DevTools 里复制的值粘进来即可
+    const idField = el("input", { type: "text", readonly: "readonly", spellcheck: "false", placeholder: "（未取到）" });
+    const accessTokenField = el("input", { type: "text", spellcheck: "false", placeholder: "（没读到，可把站点上复制的值粘进来）" });
+    const cookieField = el("textarea", { rows: "2", spellcheck: "false", placeholder: "（读不到，可把 F12 → Network 里的 Cookie 头粘进来）" });
+    const regenBtn = el("button", { text: "♻ 重新生成" });
+
+    // API 密钥（sk- 开头、调用模型用）—— 和「系统访问令牌」不是一回事，单独弱化摆放
     const tokenSelect = el("select");
     const createBtn = el("button", { text: "＋ 新建" });
     const deleteBtn = el("button", { text: "🗑 删除" });
-
-    // 这一组就是「提取到的东西」本身。令牌字段可编辑 —— 接口只给掩码时能把复制的完整值粘进来
-    const idField = el("input", { type: "text", readonly: "readonly", spellcheck: "false", placeholder: "（未取到）" });
-    const tokenField = el("input", { type: "text", spellcheck: "false", placeholder: "（选一个令牌；也可把站点上复制的完整值粘进来）" });
-    const cookieField = el("textarea", { rows: "2", readonly: "readonly", spellcheck: "false", placeholder: "（读不到，见上面的说明）" });
 
     let state = null;
 
@@ -779,18 +793,20 @@
       return el("div", { class: "acs-row" }, [el("label", { text: labelText }), field, copyBtn]);
     }
 
-    /** 这里只给**原始值**：用户 ID / 令牌 / Cookie。要行格式或 SITES JSON，走「SITES JSON」那条 */
+    /**
+     * 这里只给**原始值**：用户 ID / 访问令牌 / Cookie。
+     * 后两个一旦被手工改过（粘了从站点复制来的值），就不再用自动读取的结果覆盖。
+     */
     function refreshValues() {
       idField.value = (state && state.me) ? String(state.me.id || "") : "";
-      const picked = state ? state.tokens[Number(tokenSelect.value || 0)] : null;
-      tokenField.value = (picked && picked.key) || "";
-      cookieField.value = (state && state.cookie) || "";
+      if (!accessTokenField.dataset.acsManual) accessTokenField.value = (state && state.accessToken) || "";
+      if (!cookieField.dataset.acsManual) cookieField.value = (state && state.cookie) || "";
     }
 
     function renderTokenOptions() {
       tokenSelect.textContent = "";
       if (!state || !state.tokens.length) {
-        tokenSelect.appendChild(el("option", { value: "", text: "（没有令牌）" }));
+        tokenSelect.appendChild(el("option", { value: "", text: "（这个账号没有 API 密钥）" }));
         return;
       }
       state.tokens.forEach((token, i) => {
@@ -801,43 +817,34 @@
       tokenSelect.value = "0";
     }
 
-    /** 新建 / 删除之后都要重新拉一次列表 */
+
+    /** 新建 / 删除 API 密钥之后重新拉一次列表 */
     async function reloadTokens() {
       const listed = await api("/api/token/?p=0&size=100");
       state.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
       renderTokenOptions();
-      await pickToken();
     }
 
-    async function pickToken() {
+    /**
+     * 验证**系统访问令牌** —— 这才是 api_checkin 要用的凭证。
+     * 走 credentials:'omit'（不带会话 cookie），免得被浏览器会话「救活」造成假阳性。
+     */
+    async function verifyAccess() {
       const verifyCell = info.querySelector("[data-acs-token-verify]");
       const setVerify = (text) => { if (verifyCell) verifyCell.textContent = text; };
 
-      if (!state) { refreshValues(); return; }
-      if (!state.tokens.length) {
-        setVerify("没有令牌，可点「＋ 新建」建一个");
-        refreshValues();
+      refreshValues();
+      const key = accessTokenField.value.trim();
+      if (!key) {
+        setVerify("⚠️ 没读到系统访问令牌（个人设置 → 安全设置 → 系统访问令牌）；可复制后粘进下面的框，或点「♻ 重新生成」");
         return;
       }
 
-      const token = state.tokens[Number(tokenSelect.value || 0)];
-      if (!token) { refreshValues(); return; }
-
-      setVerify("正在验证…");
-
-      // 列表接口常常只给掩码，这时先向 /api/token/{id} 要完整值
-      let key = tokenKeyOf(token);
-      if (looksMasked(key)) {
-        const full = await fetchFullKey(token);
-        if (full) key = full;
-      }
-      token.key = key;
-      refreshValues();
-
-      const reason = await verifyToken(key, state.me.id);
-      if (!reason) setVerify("✅ 令牌已验证可用");
-      else if (looksMasked(key)) setVerify("⚠️ 拿不到完整令牌：列表接口只返回掩码（" + key + "）。去站点「令牌」页点复制，再粘进下面的「令牌」框");
-      else setVerify("⚠️ 令牌验证没通过：" + reason);
+      setVerify("正在验证系统访问令牌…");
+      const reason = await verifyToken(key, state ? state.me.id : currentUserId);
+      if (!reason) setVerify("✅ 系统访问令牌已验证可用");
+      else if (accessTokenField.dataset.acsManual) setVerify("⚠️ 手工填的值没通过：" + reason);
+      else setVerify("⚠️ 系统访问令牌验证没通过：" + reason);
     }
 
     function renderInfo(message) {
@@ -868,8 +875,8 @@
         ]));
       });
       info.appendChild(el("div", { class: "acs-kv" }, [
-        el("b", { text: "令牌　" }),
-        el("span", { "data-acs-token-verify": "1", text: "选取后自动验证" }),
+        el("b", { text: "访问令牌　" }),
+        el("span", { "data-acs-token-verify": "1", text: "读取后自动验证" }),
       ]));
       if (state.errors.length) {
         state.errors.forEach((message2) => info.appendChild(el("div", { text: "⚠️ " + message2 })));
@@ -883,11 +890,11 @@
         state = await collect(idInput.value);
         renderInfo();
         renderTokenOptions();
+        await verifyAccess();
         errorBox.className = "acs-status ok";
-        errorBox.textContent = state.tokens.length
-          ? "读到 " + state.tokens.length + " 个令牌"
-          : "这个账号还没有令牌，点「＋ 新建」建一个";
-        await pickToken();
+        errorBox.textContent = state.accessToken
+          ? "已读到系统访问令牌"
+          : "没读到系统访问令牌 —— 去站点「个人设置 → 安全设置」复制后粘进下面的框，或点「♻ 重新生成」";
       } catch (e) {
         state = null;
         renderInfo();
@@ -908,9 +915,8 @@
         await reloadTokens();
         // 刚建的排最后，直接选中它
         tokenSelect.value = String(Math.max(0, state.tokens.length - 1));
-        await pickToken();
         errorBox.className = "acs-status ok";
-        errorBox.textContent = "已新建令牌：" + name + "（只是标签，站点上可以改）";
+        errorBox.textContent = "已新建 API 密钥：" + name + "（只是标签，站点上可以改）";
       } catch (e) {
         errorBox.className = "acs-status err";
         errorBox.textContent = "新建失败：" + e.message;
@@ -926,8 +932,8 @@
 
       const name = token.name || ("#" + token.id);
       const sure = window.confirm(
-        "确定删除令牌「" + name + "」？\n\n"
-        + "这一步在站点上不可撤销。如果别的脚本正在用这个令牌，删了它们就会 401。"
+        "确定删除 API 密钥「" + name + "」？\n\n"
+        + "这一步在站点上不可撤销。如果别的脚本正在用它调模型，删了它们就会 401。"
       );
       if (!sure) return;
 
@@ -938,7 +944,7 @@
         await deleteToken(token.id);
         await reloadTokens();
         errorBox.className = "acs-status ok";
-        errorBox.textContent = "已删除令牌：" + name;
+        errorBox.textContent = "已删除 API 密钥：" + name;
       } catch (e) {
         errorBox.className = "acs-status err";
         errorBox.textContent = "删除失败：" + e.message;
@@ -947,22 +953,42 @@
       }
     });
 
-    tokenSelect.addEventListener("change", pickToken);
     retryBtn.addEventListener("click", load);
 
-    // 接口只给掩码时，把站点上复制的完整令牌粘进来验一下
-    tokenField.addEventListener("change", async () => {
-      const manual = tokenField.value.trim();
-      if (!manual || !state) return;
-      const key = manual.indexOf("sk-") === 0 ? manual : "sk-" + manual;
-      const verifyCell = info.querySelector("[data-acs-token-verify]");
-      if (verifyCell) verifyCell.textContent = "正在验证手工填的令牌…";
+    // 手工粘进来的值标记一下，之后不再被自动读取覆盖
+    accessTokenField.addEventListener("input", () => { accessTokenField.dataset.acsManual = "1"; });
+    cookieField.addEventListener("input", () => { cookieField.dataset.acsManual = "1"; });
+    accessTokenField.addEventListener("change", () => { if (state) verifyAccess(); });
 
-      const reason = await verifyToken(key, state.me.id);
-      if (verifyCell) {
-        verifyCell.textContent = reason
-          ? "⚠️ 手工填的令牌没通过：" + reason
-          : "✅ 手工填的令牌验证通过，可以直接复制去用";
+    regenBtn.addEventListener("click", async () => {
+      if (!state) return;
+      const sure = window.confirm(
+        "确定重新生成系统访问令牌？\n\n"
+        + "⚠️ 旧令牌会立刻失效 —— 如果 api_checkin 的 Secret 里正用着旧值，签到会开始 401，记得换上去。"
+      );
+      if (!sure) return;
+
+      regenBtn.disabled = true;
+      errorBox.className = "acs-status";
+      errorBox.textContent = "正在重新生成…";
+      try {
+        const fresh = await regenerateAccessToken();
+        delete accessTokenField.dataset.acsManual;
+        if (fresh) {
+          state.accessToken = fresh;
+          refreshValues();
+        } else {
+          state = await collect(idInput.value);
+        }
+        await verifyAccess();
+        renderInfo();
+        errorBox.className = "acs-status ok";
+        errorBox.textContent = "已重新生成系统访问令牌 —— 记得把新值更新到 api_checkin 的 Secret 里";
+      } catch (e) {
+        errorBox.className = "acs-status err";
+        errorBox.textContent = "重新生成失败：" + e.message;
+      } finally {
+        regenBtn.disabled = false;
       }
     });
 
@@ -972,15 +998,23 @@
     body.appendChild(el("div", { class: "acs-row" }, [
       el("label", { text: "用户 ID" }), idInput, retryBtn,
     ]));
-    body.appendChild(el("div", { class: "acs-row" }, [
-      el("label", { text: "令牌" }), tokenSelect, createBtn, deleteBtn,
-    ]));
+
     body.appendChild(el("div", { class: "acs-row", style: "margin:12px 0 6px" }, [
-      el("b", { text: "提取到的值" }),
+      el("b", { text: "提取到的值　" }),
+      el("span", { class: "acs-kv", text: "api_checkin 要的是「访问令牌」" }),
     ]));
     body.appendChild(valueRow("用户 ID", idField));
-    body.appendChild(valueRow("令牌", tokenField));
+    body.appendChild(valueRow("访问令牌", accessTokenField));
     body.appendChild(valueRow("Cookie", cookieField));
+    body.appendChild(el("div", { class: "acs-row" }, [el("div", { style: "flex:1" }), regenBtn]));
+
+    // API 密钥单独收进折叠块 —— 它是给模型调用用的，和上面的访问令牌不是一回事
+    body.appendChild(el("details", { style: "margin-top:12px" }, [
+      el("summary", { text: "API 密钥（sk- 开头，调用模型用 —— api_checkin 用不上）" }),
+      el("div", { class: "acs-row", style: "margin-top:8px" }, [tokenSelect, createBtn, deleteBtn]),
+      el("p", { class: "acs-hint", text: "这一组走 /api/token/，就是站点「密钥管理」页里的东西；有的版本只返回掩码（含 *），拿不到明文。" }),
+    ]));
+
     body.appendChild(el("p", { class: "acs-hint", text: "要把它们变成行格式 / SITES JSON：用菜单里的「SITES JSON」粘一遍（GitHub 派发页也有同一个按钮）。" }));
     body.appendChild(el("p", { class: "acs-hint", text: "全部在本机浏览器里完成，不会发往任何第三方。" }));
 
