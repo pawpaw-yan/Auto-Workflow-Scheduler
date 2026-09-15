@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         api_checkin 助手（行格式 ↔ JSON + 账号提取）
 // @namespace    https://github.com/pawpaw-yan/Auto-Workflow-Scheduler
-// @version      1.0.0
+// @version      1.1.0
 // @description  GitHub 派发页：把「一行一个账号」的行格式转成 SITES JSON 并一键填入输入框。new-api / one-api 站点：一键提取 cookie / 用户 ID / 访问令牌，没有可用令牌就调接口新建一个。
 // @match        https://github.com/*/*/actions*
 // @match        *://*/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_cookie
 // @run-at       document-idle
 //
 // ─────────────────────────────────────────────────────────────────────────
@@ -247,13 +248,33 @@
       border: 1px solid var(--acs-acc) !important; border-radius: 8px; padding: 5px 11px;
       font-size: 12.5px; cursor: pointer;
     }
+    /* 小助手：默认贴右上角，可拖动，位置记在 localStorage */
     .acs-launcher {
-      position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
+      position: fixed; right: 16px; top: 16px; z-index: 2147483000;
       background: var(--acs-acc); color: #fff; border: 0; border-radius: 999px;
-      padding: 9px 15px; cursor: pointer; font-size: 13px;
+      padding: 9px 15px; cursor: grab; font-size: 13px;
       box-shadow: 0 8px 24px rgba(0,0,0,.26);
+      user-select: none; touch-action: none; white-space: nowrap;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
+    .acs-launcher:active { cursor: grabbing; }
+
+    /* 二级菜单：毛玻璃小面板 */
+    .acs-menu {
+      position: fixed; z-index: 2147483001; min-width: 168px; padding: 6px;
+      background: var(--acs-card); color: var(--acs-fg);
+      -webkit-backdrop-filter: blur(18px) saturate(160%);
+      backdrop-filter: blur(18px) saturate(160%);
+      border: 1px solid var(--acs-bd); border-radius: 12px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .34);
+      font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .acs-menu button {
+      display: block; width: 100%; text-align: left; background: transparent;
+      border: 0; border-radius: 8px; padding: 8px 10px; color: var(--acs-fg);
+      cursor: pointer; font-size: 13px;
+    }
+    .acs-menu button:hover { background: var(--acs-in); color: var(--acs-acc); }
     .acs-flash { outline: 3px solid var(--acs-acc) !important; outline-offset: 1px; }
   `;
 
@@ -410,6 +431,8 @@
     });
     const fillBtn = el("button", { class: "acs-primary", text: "填入 SITES 输入框", disabled: "disabled" });
     const copyBtn = el("button", { text: "复制 JSON", disabled: "disabled" });
+    // 没有目标输入框（比如从站点侧菜单打开）时就只出 JSON，不显示「填入」
+    if (!targetInput) fillBtn.style.display = "none";
 
     let currentJson = "";
 
@@ -571,6 +594,31 @@
     return [];
   }
 
+  /**
+   * 尽量凑出 Cookie 请求头。
+   * document.cookie 拿不到 httpOnly 的会话 cookie，而 new-api 的 session 通常正是 httpOnly ——
+   * GM_cookie 走的是浏览器 cookie 接口，能读到；没有权限或不被支持时退回 document.cookie。
+   */
+  function readCookieHeader() {
+    return new Promise((resolve) => {
+      const fallback = () => resolve({ text: document.cookie || "", source: "document" });
+
+      if (typeof GM_cookie !== "undefined" && GM_cookie && typeof GM_cookie.list === "function") {
+        try {
+          GM_cookie.list({ url: location.href }, (cookies, error) => {
+            if (error || !cookies || !cookies.length) { fallback(); return; }
+            resolve({
+              text: cookies.map((c) => c.name + "=" + c.value).join("; "),
+              source: "GM_cookie",
+            });
+          });
+          return;
+        } catch (e) { /* 没授权 / 不支持，落回 document.cookie */ }
+      }
+      fallback();
+    });
+  }
+
   /** 从站点侧收集：站点、账号、cookie、令牌列表。userId 用于 localStorage 读不到时手动兜底 */
   async function collect(userId) {
     const result = {
@@ -578,7 +626,8 @@
       status: null,
       me: null,
       tokens: [],
-      cookie: document.cookie || "",
+      cookie: "",
+      cookieSource: "document",
       sessionVisible: false,
       errors: [],
     };
@@ -594,6 +643,10 @@
         + "先确认已登录站点；还不行就把下面「用户 ID」手填进去再点「重试」。"
       );
     }
+
+    const cookie = await readCookieHeader();
+    result.cookie = cookie.text;
+    result.cookieSource = cookie.source;
 
     const me = await api("/api/user/self");
     if (!me || me.success !== true || !me.data) {
@@ -611,21 +664,53 @@
       result.errors.push("读令牌列表失败（" + e.message + "），可以点「新建令牌」试一个");
     }
 
-    // document.cookie 读不到 httpOnly 的会话 cookie —— 这时只能让用户从 F12 复制
     result.sessionVisible = /(^|;\s*)(session|new-api-session)=/.test(result.cookie);
     return result;
   }
 
-  /** 用令牌自己发一次请求验证可用性：credentials=omit，避免被会话 cookie「救活」造成假阳性 */
+  /** 令牌值是不是「掩码」（形如 sk-abc1********WXYZ）。列表接口可能只给掩码，那种值必然 401 */
+  function looksMasked(key) {
+    return String(key || "").indexOf("*") !== -1;
+  }
+
+  /**
+   * 用令牌单独发一次请求验证可用性：credentials='omit' 不带会话 cookie，
+   * 免得被浏览器会话「救活」造成假阳性。
+   * 返回**空串** = 可用；否则返回失败原因（直接显示给用户，方便排查）。
+   */
   async function verifyToken(key, userId) {
+    if (looksMasked(key)) return "这是接口给的掩码（含 *），不是完整令牌";
     try {
       const data = await api("/api/user/self", {
         omitCookie: true,
         headers: { Authorization: "Bearer " + key, "New-Api-User": String(userId) },
       });
-      return Boolean(data && data.success === true);
+      if (data && data.success === true) return "";
+      return "接口返回 success=false：" + JSON.stringify(data).slice(0, 140);
     } catch (e) {
-      return false;
+      return e.message;
+    }
+  }
+
+  /**
+   * 列表接口把 key 打了码，完整值要单独取：GET /api/token/{id}。
+   * 拿不到（或拿回来还是掩码）就返回空串，由界面提示去站点「令牌」页点复制。
+   */
+  async function fetchFullKey(token) {
+    if (!token || !token.id) return "";
+    try {
+      const res = await api("/api/token/" + token.id);
+      const body = res && res.data;
+      // 各版本这里可能是 { data: {...token...} } 或 { data: { token: {...} } }
+      const item = (body && typeof body === "object" && body.token) || body;
+      const raw = typeof item === "string"
+        ? item
+        : ((item && (item.key || item.token || item.value)) || "");
+      if (!raw) return "";
+      const key = String(raw).indexOf("sk-") === 0 ? String(raw) : "sk-" + raw;
+      return looksMasked(key) ? "" : key;
+    } catch (e) {
+      return "";
     }
   }
 
@@ -721,12 +806,27 @@
       const token = state.tokens[index];
       if (!token) return;
 
-      token.key = tokenKeyOf(token);
+      const verifyCell = info.querySelector("[data-acs-token-verify]");
+      verifyCell.textContent = "正在验证…";
+
+      // 列表接口常常只给掩码，这时先向 /api/token/{id} 要完整值
+      let key = tokenKeyOf(token);
+      if (looksMasked(key)) {
+        const full = await fetchFullKey(token);
+        if (full) key = full;
+      }
+      token.key = key;
       siteAccounts.picked = token;
 
-      const ok = await verifyToken(token.key, state.me.id);
-      const line = ok ? "✅ 令牌已验证可用" : "⚠️ 令牌验证没通过（可能被禁用或站点不认这个前缀）";
-      info.querySelector("[data-acs-token-verify]").textContent = line;
+      const reason = await verifyToken(key, state.me.id);
+      if (!reason) {
+        verifyCell.textContent = "✅ 令牌已验证可用";
+      } else if (looksMasked(key)) {
+        verifyCell.textContent = "⚠️ 拿不到完整令牌：列表接口只返回掩码（" + key
+          + "）。去站点「令牌」页点复制，再把完整值手工填进 SITES";
+      } else {
+        verifyCell.textContent = "⚠️ 令牌验证没通过：" + reason;
+      }
       refreshOutput();
     }
 
@@ -737,14 +837,19 @@
         return;
       }
       const me = state.me || {};
+      const cookieCount = state.cookie ? state.cookie.split(";").filter((s) => s.trim()).length : 0;
       const rows = [
         ["站点", state.origin],
         ["账号", "#" + (me.id || "?") + " " + (me.username || me.display_name || "")],
         ["版本", (state.status && (state.status.version || state.status.system_name)) || "?"],
         ["会话", "✅ 有效（已用 /api/user/self 验证）"],
         ["Cookie", state.sessionVisible
-          ? "✅ JS 读到了会话 cookie"
-          : "⚠️ JS 读不到会话 cookie（httpOnly）—— 要用 cookie 认证请按 F12 → Network 复制 Cookie 头"],
+          ? "✅ 读到会话 cookie（来源 " + state.cookieSource + "，" + cookieCount + " 条）"
+          : cookieCount
+            ? "⚠️ 只读到 " + cookieCount + " 条非会话 cookie（来源 " + state.cookieSource + "）；"
+              + "会话 cookie 是 httpOnly 读不到 —— 要用 cookie 认证请按 F12 → Network 复制 Cookie 头"
+            : "⛔ 一条 cookie 都读不到（来源 " + state.cookieSource + "）。new-api 的会话 cookie 是 httpOnly，"
+              + "脚本拿不到 —— 请按 F12 → Network 复制 Cookie 头，或直接用上面的令牌"],
       ];
       rows.forEach((row) => {
         info.appendChild(el("div", { class: "acs-kv" }, [
@@ -840,12 +945,156 @@
     load();
   }
 
+  /* ── 小助手：默认右上角、可拖动、位置记在 localStorage、点开是二级菜单 ── */
+
+  const POS_KEY = "acs-launcher-pos";
+
+  function savedPos() {
+    try { return JSON.parse(window.localStorage.getItem(POS_KEY) || "null"); } catch (e) { return null; }
+  }
+
+  function savePos(pos) {
+    try { window.localStorage.setItem(POS_KEY, JSON.stringify(pos)); } catch (e) { /* 忽略 */ }
+  }
+
+  function clampToViewport(btn, left, top) {
+    const maxLeft = Math.max(0, window.innerWidth - btn.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - btn.offsetHeight);
+    return {
+      left: Math.min(Math.max(0, left), maxLeft),
+      top: Math.min(Math.max(0, top), maxTop),
+    };
+  }
+
+  /** 一旦落到具体坐标，就把 right 让开，免得两套定位打架 */
+  function placeAt(btn, pos) {
+    btn.style.left = pos.left + "px";
+    btn.style.top = pos.top + "px";
+    btn.style.right = "auto";
+  }
+
+  let launcherMenu = null;
+
+  function closeLauncherMenu() {
+    if (launcherMenu) { launcherMenu.remove(); launcherMenu = null; }
+  }
+
+  function openLauncherMenu(btn) {
+    if (launcherMenu) { closeLauncherMenu(); return; }   // 再点一次 = 收起
+
+    const menu = el("div", { class: "acs-menu" });
+    palette(menu);
+    [
+      ["提取账号", () => openExtractor()],
+      ["SITES JSON", () => openConverter(null)],
+    ].forEach((entry) => {
+      const item = el("button", { type: "button", text: entry[0] });
+      item.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeLauncherMenu();
+        entry[1]();
+      });
+      menu.appendChild(item);
+    });
+
+    document.body.appendChild(menu);
+    launcherMenu = menu;
+
+    // 贴在按钮下方；下方放不下就翻到上方
+    const rect = btn.getBoundingClientRect();
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menu.offsetWidth - 8));
+    let top = rect.bottom + 6;
+    if (top + menu.offsetHeight > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - menu.offsetHeight - 6);
+    }
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+
+    ["click", "mousedown", "pointerdown"].forEach((type) => {
+      menu.addEventListener(type, (event) => event.stopPropagation());
+    });
+    document.addEventListener("click", closeLauncherMenu, { once: true });
+  }
+
+  function makeDraggable(btn) {
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    btn.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const rect = btn.getBoundingClientRect();
+      placeAt(btn, { left: rect.left, top: rect.top });   // 先钉住当前坐标，再跟手移动
+      dragging = true;
+      moved = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      if (btn.setPointerCapture) btn.setPointerCapture(event.pointerId);
+      event.stopPropagation();
+    });
+
+    btn.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      placeAt(btn, clampToViewport(btn, startLeft + dx, startTop + dy));
+    });
+
+    function endDrag(event) {
+      if (!dragging) return;
+      dragging = false;
+      if (btn.releasePointerCapture && event.pointerId !== undefined) {
+        try { btn.releasePointerCapture(event.pointerId); } catch (e) { /* 忽略 */ }
+      }
+      if (moved) {
+        const rect = btn.getBoundingClientRect();
+        savePos(clampToViewport(btn, rect.left, rect.top));
+      }
+    }
+    btn.addEventListener("pointerup", endDrag);
+    btn.addEventListener("pointercancel", endDrag);
+
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (moved) { moved = false; return; }   // 刚拖完的那一下不算点击
+      openLauncherMenu(btn);
+    });
+
+    // 窗口缩小后别把按钮留在看不见的地方
+    window.addEventListener("resize", () => {
+      const rect = btn.getBoundingClientRect();
+      const pos = clampToViewport(btn, rect.left, rect.top);
+      if (pos.left !== rect.left || pos.top !== rect.top) placeAt(btn, pos);
+    });
+  }
+
   function injectLauncher() {
     if (document.getElementById("acs-launcher")) return;
-    const btn = el("button", { class: "acs-launcher", id: "acs-launcher", text: "🍪 提取账号", type: "button" });
+    const btn = el("button", {
+      class: "acs-launcher",
+      id: "acs-launcher",
+      type: "button",
+      text: "🛠 账号小助手",
+      title: "点一下开菜单；按住可拖动，位置会记住",
+    });
     palette(btn);
-    btn.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); openExtractor(); });
     document.body.appendChild(btn);
+
+    const pos = savedPos();
+    if (pos && typeof pos.left === "number" && typeof pos.top === "number") {
+      placeAt(btn, clampToViewport(btn, pos.left, pos.top));
+    }
+    // 没存过位置就保持 CSS 默认值：右上角
+
+    makeDraggable(btn);
   }
 
   async function bootSite(force) {
