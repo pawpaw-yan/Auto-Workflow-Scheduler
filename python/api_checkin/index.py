@@ -781,6 +781,8 @@ class SiteClient:
             self._checkin_path = path
             success = bool(body.get("success"))
             message = str(body.get("message") or "")
+            if not success and re.search(r"turnstile|人机验证|验证码", message, re.I):
+                message += "（该站签到启用了 Turnstile 人机验证 —— 脚本无法自动签到，请在浏览器手动完成）"
             return success, message, body.get("data")
         raise last_error or RequestError("所有签到路径都返回 404")
 
