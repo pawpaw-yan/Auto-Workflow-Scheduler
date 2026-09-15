@@ -158,12 +158,25 @@
 
   const CSS = `
     .acs-panel, .acs-panel * { box-sizing: border-box; }
+
+    /* 遮罩：压暗页面 + 毛玻璃，把注意力收到卡片上 */
+    .acs-backdrop {
+      position: fixed; inset: 0; z-index: 2147482998;
+      background: rgba(12, 15, 20, .30);
+      -webkit-backdrop-filter: blur(7px) saturate(140%);
+      backdrop-filter: blur(7px) saturate(140%);
+    }
+
+    /* 卡片：页面正中间，半透明 + 毛玻璃 */
     .acs-panel {
-      position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
-      width: min(600px, calc(100vw - 32px)); max-height: 82vh; overflow: auto;
-      background: var(--acs-bg); color: var(--acs-fg);
-      border: 1px solid var(--acs-bd); border-radius: 12px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.28);
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 2147482999;
+      width: min(640px, calc(100vw - 32px)); max-height: 85vh; overflow: auto;
+      background: var(--acs-card); color: var(--acs-fg);
+      -webkit-backdrop-filter: blur(20px) saturate(170%);
+      backdrop-filter: blur(20px) saturate(170%);
+      border: 1px solid var(--acs-bd); border-radius: 16px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
       font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
       padding: 0;
     }
@@ -172,8 +185,25 @@
     }
     .acs-head {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 14px; border-bottom: 1px solid var(--acs-bd); position: sticky; top: 0;
-      background: var(--acs-bg); border-radius: 12px 12px 0 0;
+      padding: 12px 16px; border-bottom: 1px solid var(--acs-bd); position: sticky; top: 0;
+      background: var(--acs-cardhead); border-radius: 16px 16px 0 0;
+      -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+    }
+    .acs-panel ::-webkit-scrollbar { width: 10px; height: 10px; }
+    .acs-panel ::-webkit-scrollbar-thumb {
+      background: var(--acs-bd); border-radius: 6px;
+    }
+
+    /* 轻提示：不挡视线，同样毛玻璃 */
+    .acs-toast {
+      position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
+      width: auto; max-width: 460px; padding: 10px 14px; border-radius: 12px;
+      background: var(--acs-card); color: var(--acs-fg);
+      -webkit-backdrop-filter: blur(16px) saturate(160%);
+      backdrop-filter: blur(16px) saturate(160%);
+      border: 1px solid var(--acs-bd);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .30);
+      font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
     .acs-head strong { font-size: 13.5px; }
     .acs-body { padding: 12px 14px 14px; }
@@ -237,15 +267,17 @@
   /** 面板自带配色：不继承宿主的 CSS 变量，免得被站点样式带跑 */
   function palette(panel) {
     const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    panel.style.setProperty("--acs-bg", dark ? "#161a21" : "#ffffff");
-    panel.style.setProperty("--acs-fg", dark ? "#e5e8ed" : "#1d2330");
-    panel.style.setProperty("--acs-bd", dark ? "#2a303b" : "#e2e6ec");
-    panel.style.setProperty("--acs-mut", dark ? "#98a1b0" : "#6b7280");
-    panel.style.setProperty("--acs-in", dark ? "#11141a" : "#f2f4f7");
+    // 卡片 / 输入框都带透明度 —— 毛玻璃得有东西透出来才像玻璃
+    panel.style.setProperty("--acs-card", dark ? "rgba(23, 27, 35, .82)" : "rgba(255, 255, 255, .84)");
+    panel.style.setProperty("--acs-cardhead", dark ? "rgba(23, 27, 35, .74)" : "rgba(255, 255, 255, .74)");
+    panel.style.setProperty("--acs-fg", dark ? "#e8ebf0" : "#1d2330");
+    panel.style.setProperty("--acs-bd", dark ? "rgba(255,255,255,.16)" : "rgba(15,23,42,.14)");
+    panel.style.setProperty("--acs-mut", dark ? "#9aa4b4" : "#5f6672");
+    panel.style.setProperty("--acs-in", dark ? "rgba(8, 11, 16, .55)" : "rgba(255, 255, 255, .78)");
     panel.style.setProperty("--acs-acc", dark ? "#6ea8fe" : "#2563eb");
     panel.style.setProperty("--acs-ok", dark ? "#34d399" : "#047857");
     panel.style.setProperty("--acs-err", dark ? "#f99090" : "#c02626");
-    panel.style.setProperty("--acs-errbg", dark ? "#33191b" : "#fdecec");
+    panel.style.setProperty("--acs-errbg", dark ? "rgba(120, 30, 34, .55)" : "rgba(253, 236, 236, .9)");
   }
 
   /* 用 createElement 拼 DOM，绝不把站点的用户名 / 令牌塞进 innerHTML */
@@ -262,12 +294,15 @@
   }
 
   function toast(message, bad) {
-    const box = el("div", { class: "acs-panel", text: message });
+    const box = el("div", { class: "acs-toast", text: message });
     palette(box);
-    box.style.cssText += ";right:16px;bottom:16px;left:auto;top:auto;width:auto;max-width:420px;padding:10px 14px;";
-    if (bad) box.style.color = "var(--acs-err)";
+    if (bad) {
+      box.style.color = "var(--acs-err)";
+      box.style.maxWidth = "560px";
+      box.style.whiteSpace = "pre-wrap";
+    }
     document.body.appendChild(box);
-    setTimeout(() => box.remove(), bad ? 6000 : 2600);
+    setTimeout(() => box.remove(), bad ? 8000 : 2600);
   }
 
   function copyText(text) {
@@ -284,29 +319,52 @@
   }
 
   let openPanel = null;
+  let openBackdrop = null;
 
-  /** 共用的浮动面板外壳；返回 { panel, body, close } */
+  /** 共用的居中卡片外壳（遮罩 + 毛玻璃），返回 { panel, body, close } */
   function makePanel(title) {
     if (openPanel) openPanel.remove();
+    if (openBackdrop) openBackdrop.remove();
 
     const body = el("div", { class: "acs-body" });
-    const panel = el("div", { class: "acs-panel" }, [
+    const backdrop = el("div", { class: "acs-backdrop" });
+    const panel = el("div", { class: "acs-panel", role: "dialog", "aria-modal": "true" }, [
       el("div", { class: "acs-head" }, [
         el("strong", { text: title }),
-        el("button", { class: "acs-x", text: "×", title: "关闭", onclick: () => panel.remove() }),
+        el("button", { class: "acs-x", text: "×", title: "关闭（Esc）", onclick: () => close() }),
       ]),
       body,
     ]);
     palette(panel);
 
-    // 别让宿主页面的「点击外部就关」逻辑把下拉/表单收走
+    function close() {
+      panel.remove();
+      backdrop.remove();
+      document.removeEventListener("keydown", onKey, true);
+      if (openPanel === panel) openPanel = null;
+      if (openBackdrop === backdrop) openBackdrop = null;
+    }
+
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        close();
+      }
+    }
+
+    // 别让宿主页面的「点击外部就关」逻辑把下拉 / 表单收走
     ["click", "mousedown", "pointerdown", "keydown"].forEach((type) => {
       panel.addEventListener(type, (event) => event.stopPropagation());
+      backdrop.addEventListener(type, (event) => event.stopPropagation());
     });
+    backdrop.addEventListener("click", close);
+    document.addEventListener("keydown", onKey, true);
 
+    document.body.appendChild(backdrop);
     document.body.appendChild(panel);
     openPanel = panel;
-    return { panel: panel, body: body, close: () => panel.remove() };
+    openBackdrop = backdrop;
+    return { panel: panel, body: body, close: close };
   }
 
   function statusLine(parent, text, cls) {
@@ -383,6 +441,7 @@
     fillBtn.addEventListener("click", () => {
       if (!currentJson) return;
       fillInput(targetInput, currentJson);
+      ui.close();   // 遮罩挡着表单，填完就收起来让人看得见
       toast("已填入 SITES，接着点 GitHub 自己的 Run workflow 就行");
     });
     copyBtn.addEventListener("click", () => {
@@ -432,10 +491,27 @@
      4. new-api / one-api 站点：提取 cookie / 用户 ID / 令牌
      ═══════════════════════════════════════════════════════════════════════ */
 
+  /* new-api 的 UserAuth 中间件**强制要求** New-Api-User 头 —— 会话认证也一样，
+     缺了直接回 401「无权进行此操作，未提供 New-Api-User」。
+     站点前端自己也是从 localStorage 的 user 里读出 id 拼上去的，这里照做。 */
+  let currentUserId = "";
+
+  function userIdFromLocalStorage() {
+    try {
+      const raw = window.localStorage.getItem("user");
+      if (raw) {
+        const user = JSON.parse(raw);
+        if (user && user.id) return String(user.id);
+      }
+    } catch (e) { /* 隐私模式 / 值不是 JSON，忽略 */ }
+    return "";
+  }
+
   async function api(path, options) {
     const opts = options || {};
     const headers = Object.assign(
       { Accept: "application/json" },
+      currentUserId ? { "New-Api-User": currentUserId } : {},
       opts.headers || {}
     );
     const response = await fetch(path, {
@@ -495,8 +571,8 @@
     return [];
   }
 
-  /** 从站点侧收集：站点、账号、cookie、令牌列表 */
-  async function collect() {
+  /** 从站点侧收集：站点、账号、cookie、令牌列表。userId 用于 localStorage 读不到时手动兜底 */
+  async function collect(userId) {
     const result = {
       origin: location.origin,
       status: null,
@@ -510,15 +586,26 @@
     result.status = await probeNewApi();
     if (!result.status) throw new Error("这个站点看起来不是 new-api / one-api（/api/status 不符合预期）");
 
+    // New-Api-User 是硬要求，必须在任何鉴权请求之前定下来
+    currentUserId = String(userId || "").trim() || userIdFromLocalStorage();
+    if (!currentUserId) {
+      throw new Error(
+        "读不到用户 ID：localStorage 里没有 user.id，而 new-api 的接口强制要求 New-Api-User 头。\n"
+        + "先确认已登录站点；还不行就把下面「用户 ID」手填进去再点「重试」。"
+      );
+    }
+
     const me = await api("/api/user/self");
     if (!me || me.success !== true || !me.data) {
-      throw new Error("读 /api/user/self 失败，可能没登录：" + JSON.stringify(me).slice(0, 160));
+      throw new Error(
+        "读 /api/user/self 失败（可能没登录，或用户 ID 不对）：" + JSON.stringify(me).slice(0, 160)
+      );
     }
     result.me = me.data;
-    const userId = String(result.me.id || "");
+    if (result.me.id) currentUserId = String(result.me.id);   // 以服务端返回的为准
 
     try {
-      const listed = await api("/api/token/?p=0&size=100", { headers: { "New-Api-User": userId } });
+      const listed = await api("/api/token/?p=0&size=100");
       result.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
     } catch (e) {
       result.errors.push("读令牌列表失败（" + e.message + "），可以点「新建令牌」试一个");
@@ -570,6 +657,10 @@
 
     const info = el("div", { class: "acs-kv" });
     const errorBox = el("div", { class: "acs-status" });
+    const idInput = el("input", { type: "text", spellcheck: "false", placeholder: "用户 ID" });
+    idInput.style.maxWidth = "150px";
+    idInput.value = userIdFromLocalStorage();
+    const retryBtn = el("button", { text: "重试" });
     const tokenSelect = el("select");
     const createBtn = el("button", { text: "＋ 新建令牌" });
     const useCookie = el("input", { type: "radio", name: "acs-mode", value: "cookie" });
@@ -674,7 +765,7 @@
       errorBox.className = "acs-status";
       errorBox.textContent = "正在读取…";
       try {
-        state = await collect();
+        state = await collect(idInput.value);
         renderInfo();
         renderTokenOptions();
         errorBox.className = "acs-status ok";
@@ -698,7 +789,7 @@
       try {
         const name = "api_checkin " + new Date().toISOString().slice(0, 10);
         await createToken(name, state.me.id);
-        const listed = await api("/api/token/?p=0&size=100", { headers: { "New-Api-User": String(state.me.id) } });
+        const listed = await api("/api/token/?p=0&size=100");
         state.tokens = listOfTokens(listed).filter((token) => token && (token.key || token.token || token.value));
         renderTokenOptions();
         // 刚建的排最后，直接选中它
@@ -715,6 +806,7 @@
     });
 
     tokenSelect.addEventListener("change", pickToken);
+    retryBtn.addEventListener("click", load);
     [useToken, useCookie].forEach((radio) => radio.addEventListener("change", refreshOutput));
 
     copyLine.addEventListener("click", () => {
@@ -726,7 +818,11 @@
 
     body.appendChild(info);
     body.appendChild(errorBox);
-    body.appendChild(el("div", { class: "acs-row", style: "margin-top:10px" }, [
+    // new-api 强制要 New-Api-User，自动读不到时这里是唯一的兜底
+    body.appendChild(el("div", { class: "acs-row" }, [
+      el("label", { text: "用户 ID" }), idInput, retryBtn,
+    ]));
+    body.appendChild(el("div", { class: "acs-row" }, [
       el("label", { text: "令牌" }), tokenSelect, createBtn,
     ]));
     body.appendChild(el("div", { class: "acs-row" }, [
