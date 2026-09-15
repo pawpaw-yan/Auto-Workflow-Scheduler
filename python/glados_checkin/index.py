@@ -131,6 +131,14 @@ class Config:
     """不兑换：GLADOS_EXCHANGE_PLAN 留空即表示明确不兑换"""
     NO_EXCHANGE = ""
 
+    """显式「本次不兑换」的取值。
+
+    workflow 里那行是 `GLADOS_EXCHANGE_PLAN: ${{ inputs.GLADOS_EXCHANGE_PLAN || vars.X }}`——
+    **留空会回落到仓库配置**，所以没法用「留空」临时关掉兑换。要关就填下面任意一个值，
+    且不会打「无效值」的告警。
+    """
+    NO_EXCHANGE_ALIASES = ("none", "off", "no", "false")
+
     """默认是否输出详细响应"""
     DEFAULT_VERBOSE = False
 
@@ -186,19 +194,27 @@ class Config:
         # cookie 只是多行机密 COOKIES 的片段，不主动注册就会以明文出现在日志里
         register_masks([cookie for _domain, cookie in self.accounts])
 
-        if not exchange_plan_env or not exchange_plan_env.strip():
+        plan = (exchange_plan_env or "").strip().lower()
+
+        if plan in self.NO_EXCHANGE_ALIASES:
+            logger.info(
+                f"{LogEmoji.INFO} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 被显式设为 "
+                f"'{plan}'，本次不执行兑换。"
+            )
+            self.exchange_plan = self.NO_EXCHANGE
+        elif not plan:
             logger.warning(
                 f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 未设置，"
                 "本次不执行兑换（留空即明确表示不兑换）。"
             )
             self.exchange_plan = self.NO_EXCHANGE
-        elif exchange_plan_env in self.EXCHANGE_PLANS:
-            self.exchange_plan = exchange_plan_env
+        elif plan in self.EXCHANGE_PLANS:
+            self.exchange_plan = plan
             logger.info(f"{LogEmoji.SUCCESS} 使用指定的兑换计划: {self.exchange_plan}")
         else:
             logger.warning(
                 f"{LogEmoji.WARNING} 环境变量 '{self.ENV_EXCHANGE_PLAN}' 的值 '{exchange_plan_env}' 无效"
-                f"（可选：{' / '.join(self.EXCHANGE_PLANS)}），本次不执行兑换。"
+                f"（可选：{' / '.join(self.EXCHANGE_PLANS)}；填 none 表示不兑换），本次不执行兑换。"
             )
             self.exchange_plan = self.NO_EXCHANGE
 
