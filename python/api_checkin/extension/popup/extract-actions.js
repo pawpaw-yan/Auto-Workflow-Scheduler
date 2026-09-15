@@ -33,7 +33,11 @@ async function runCookieTest() {
       setStatus("testResult", "❌ Cookie 没过：success=false（可能没登录）", true);
     }
   } catch (e) {
-    setStatus("testResult", "❌ Cookie 没过：" + e.message, true);
+    let msg = "❌ Cookie 没过：" + e.message;
+    if (/AUTH_UNAUTHORIZED|access token/i.test(e.message)) {
+      msg += "\n该站是 new-api v1.x：接口只认 Bearer 令牌、不认 cookie —— 请改用令牌方式";
+    }
+    setStatus("testResult", msg, true);
   }
 }
 

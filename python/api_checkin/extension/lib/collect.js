@@ -10,7 +10,7 @@ async function collectSite(site, manualUserId) {
     site: site, userId: "", me: null,
     cookie: "", cookieNames: [], cookieCount: 0, sessionValid: false,
     accessToken: "", accessTokenSource: "", accessTokenNote: "",
-    testDetail: null, testLoose: false, errors: [],
+    testDetail: null, testLoose: false, errors: [], v1x: false,
   };
 
   // 1. Cookie：chrome.cookies 直接读（含 httpOnly）
@@ -45,6 +45,7 @@ async function collectSite(site, manualUserId) {
   if (bundle) {
     result.me = bundle.user;
     result.sessionValid = true;
+    result.v1x = true;   // new-api v1.x：接口只认 Bearer 令牌，cookie 方式不适用
   } else {
     try {
       const me = userFromSelf(await callApi(site + "/api/user/self", { userId: userId }));

@@ -35,6 +35,7 @@ function renderExtractInfo() {
     ["用户 ID", state.userId || "（未取到）"],
     ["会话", state.sessionValid ? "有效" : "无效（没登录或被 WAF 拦）"],
     ["Cookie 数", String(state.cookieCount || 0)],
+    ["站点类型", state.v1x ? "new-api v1.x（接口只认令牌 —— 用下面的令牌配 token 方式）" : "new-api / one-api（cookie 或令牌均可）"],
     ["访问令牌", state.accessToken
       ? (state.accessTokenSource + "（已验证可用）")
       : (state.accessTokenNote || "（未取到）")],
