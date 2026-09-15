@@ -552,6 +552,10 @@ class RequestError(Exception):
     """请求失败。消息里**只带状态码与截断后的响应片段**，不带凭证。"""
 
 
+class NoCheckinApi(RequestError):
+    """站点没有提供签到接口（所有路径都 404）—— 属于「无需签到」，不算故障。"""
+
+
 class AuthError(Exception):
     """凭证不被接受。
 
@@ -749,7 +753,12 @@ class SiteClient:
             # 把服务端原文带上：new-api 系的 401 会说「未提供 New-Api-User」这类具体原因
             raise AuthError(
                 f"HTTP {response.status_code}：{body[:120]}",
-                self._auth_hint(response.status_code),
+                (
+                    "该站在 Cloudflare 盾后：人机校验对脚本 / 数据中心 IP 无法通过 —— "
+                    "浏览器可行，workflow 不行，请在浏览器手动签到"
+                    if "Just a moment" in body
+                    else self._auth_hint(response.status_code)
+                ),
             )
 
         if not response.ok:
@@ -824,6 +833,7 @@ class SiteClient:
         paths = [self._checkin_path] if self._checkin_path else [CHECKIN_PATH, *CHECKIN_FALLBACK_PATHS]
         last_error: Optional[RequestError] = None
         pow_retried = False
+        auth_retried = False
         for path in paths:
             try:
                 body = self.request("POST", path)
@@ -834,17 +844,33 @@ class SiteClient:
                 raise   # 401 认证 / 5xx 等真实问题不回退，直接上抛
             self._checkin_path = path
             message = str(body.get("message") or "")
-            if not body.get("success") and not pow_retried and re.search(r"\bpow\b", message, re.I):
-                pow_retried = True
-                query = self._solve_v1_checkin_pow()
-                if query:
-                    body = self.request("POST", path + "?" + query)
-                    message = str(body.get("message") or "")
+            if not body.get("success"):
+                # 按失败原因做一次自我修复后重试（每种各一次）
+                if not pow_retried and re.search(r"\bpow\b", message, re.I):
+                    pow_retried = True
+                    query = self._solve_v1_checkin_pow()
+                    if query:
+                        body = self.request("POST", path + "?" + query)
+                        message = str(body.get("message") or "")
+                elif not auth_retried and re.search(
+                    r"unauthorized|invalid access token|未登录", message, re.I
+                ):
+                    # 状态接口认可此凭证、签到接口不认 —— 典型 v1.x：cookie 只剩刷新用途。
+                    # 罐里有刷新 cookie 就自举一次换 Bearer 重试
+                    auth_retried = True
+                    if self._try_v1_bootstrap():
+                        body = self.request("POST", path)
+                        message = str(body.get("message") or "")
+                    else:
+                        message += (
+                            "（状态接口认可此凭证，但签到接口不认 —— 若该站是 new-api v1.x，"
+                            "请改用 cookie 方式让脚本走自举）"
+                        )
             success = bool(body.get("success"))
             if not success and re.search(r"turnstile|人机验证|验证码", message, re.I):
                 message += "（该站签到启用了 Turnstile 人机验证 —— 脚本无法自动签到，请在浏览器手动完成）"
             return success, message, body.get("data")
-        raise last_error or RequestError("所有签到路径都返回 404")
+        raise NoCheckinApi("该站未提供签到接口（可能为进站自动签到），已跳过")
 
 
 def _unwrap(body: dict) -> dict:
@@ -872,6 +898,7 @@ def _quota_of(user: dict) -> Optional[float]:
 class Status:
     SUCCESS = "ok"
     REPEAT = "repeat"
+    SKIPPED = "skipped"
     FAILURE = "fail"
 
 
@@ -951,10 +978,15 @@ def check_account(account: Account, timeout: int, verbose: bool) -> CheckinResul
         logger.error(f"{LogEmoji.ERROR} {account.display} 认证失败：{exc}")
         if exc.hint:
             logger.error(f"{LogEmoji.INFO}   排查方向：{exc.hint}")
+    except NoCheckinApi as exc:
+        result.status = Status.SKIPPED
+        result.message = str(exc)
+        logger.info(f"{LogEmoji.INFO} {account.display} {exc}")
     except RequestError as exc:
         result.status = Status.FAILURE
         result.message = str(exc)
-        logger.error(f"{LogEmoji.ERROR} {account.display} 请求失败：{exc}")
+        cf = "（该站在 Cloudflare 盾后：脚本 / 数据中心 IP 无法通过人机校验，需浏览器环境）" if "Just a moment" in str(exc) else ""
+        logger.error(f"{LogEmoji.ERROR} {account.display} 请求失败：{exc}{cf}")
 
     return result
 
@@ -975,9 +1007,11 @@ def format_results(results: List[CheckinResult]) -> Tuple[str, str, str]:
     """返回 (推送标题, 推送正文, 日志正文)"""
     success = sum(1 for item in results if item.status == Status.SUCCESS)
     repeat = sum(1 for item in results if item.status == Status.REPEAT)
+    skipped = sum(1 for item in results if item.status == Status.SKIPPED)
     failure = sum(1 for item in results if item.status == Status.FAILURE)
 
-    title = f"API 签到, 成功{success}, 重复{repeat}, 失败{failure}"
+    skipped_part = f", 跳过{skipped}" if skipped else ""
+    title = f"API 签到, 成功{success}, 重复{repeat}{skipped_part}, 失败{failure}"
 
     send_lines: List[str] = []
     log_lines: List[str] = []
