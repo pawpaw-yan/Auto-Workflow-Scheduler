@@ -1,16 +1,17 @@
-/* collect.js —— 提取一个站点的全部要素：cookie（含 httpOnly）→ 用户 ID → 会话 → 访问令牌。
-   用户 ID 三级自举：站点 localStorage（v0.x 系）→ new-api v1.x 的 auth/refresh
-   （浏览器自动带 httpOnly 刷新 cookie，与站点前端同一逻辑）→ 手填兜底。
+/* collect.js —— 提取一个站点的全部要素。支持三类站点：
+   ① 标准 new-api / one-api（含 v0.x 与定制 fork）
+   ② new-api v1.x（轮换 Bearer，POST /api/user/auth/refresh 自举）
+   ③ 独立签到系统（LinuxDo OAuth + PoW，GET /api/info 是状态口，cookie 即凭证）
    每一步的失败都记进 errors，绝不因为一步失败丢掉已拿到的值。 */
 
 "use strict";
 
 async function collectSite(site, manualUserId) {
   const result = {
-    site: site, userId: "", me: null,
+    site: site, userId: "", me: null, siteType: "",
     cookie: "", cookieNames: [], cookieCount: 0, sessionValid: false,
     accessToken: "", accessTokenSource: "", accessTokenNote: "",
-    testDetail: null, testLoose: false, errors: [], v1x: false,
+    testDetail: null, testLoose: false, errors: [],
   };
 
   // 1. Cookie：chrome.cookies 直接读（含 httpOnly）
@@ -20,32 +21,56 @@ async function collectSite(site, manualUserId) {
   result.cookieNames = jar.cookies.map((c) => c.name);
   result.cookieCount = result.cookieNames.length;
 
-  // 2. 用户 ID：手填 → 站点 localStorage（注入）→ new-api v1.x 自举
+  // 2. 用户 ID：手填 → 站点 localStorage → 独立签到系统 /api/info → v1.x 自举
   let userId = String(manualUserId || "").trim();
   let bundle = null;
+  let checkinInfo = null;
   if (!userId) {
     const cached = await readSiteLocalStorage(site);
     if (cached && cached.id) userId = cached.id;
   }
   if (!userId) {
+    const probe = await fetchCheckinInfo(site);
+    if (probe.ok) {
+      checkinInfo = probe.info;
+      result.siteType = "checkin-system";
+      if (checkinInfo.logged_in) {
+        userId = String(checkinInfo.user_id || checkinInfo.linux_do_id || "");
+      } else {
+        result.errors.push(
+          "未登录：该站是独立的签到系统（Linux Do OAuth）。请先在浏览器用 Linux Do 登录本站，再回来重试"
+        );
+      }
+    }
+  }
+  if (!userId && !checkinInfo) {
     bundle = await bootstrapV1Auth(site);
-    if (bundle && bundle.user && bundle.user.id) userId = String(bundle.user.id);
+    if (bundle && bundle.user && bundle.user.id) {
+      userId = String(bundle.user.id);
+      result.siteType = "v1x";
+    }
   }
   if (!userId) {
-    result.errors.push(
-      "读不到用户 ID。检查：① 浏览器已登录该站点；" +
-      "② new-api v1.x 站把用户信息只放在内存里，自动读不到 —— 在下面手填用户 ID" +
-      "（站点「个人设置」页可查），或生成系统访问令牌后改用令牌方式"
-    );
+    if (result.siteType !== "checkin-system") {
+      result.errors.push(
+        "读不到用户 ID。检查：① 浏览器已登录该站点；" +
+        "② new-api v1.x 站把用户信息只放在内存里 —— 在下面手填用户 ID" +
+        "（站点「个人设置」页可查），或生成系统访问令牌后改用令牌方式"
+      );
+    }
     return result;
   }
   result.userId = userId;
 
-  // 3. 会话：v1.x 自举结果自带用户对象；否则带 cookie 调 /api/user/self（顺带过 WAF）
-  if (bundle) {
+  // 3. 会话：签到系统看 info；v1.x 用自举结果；标准站带 cookie 调 /api/user/self
+  if (checkinInfo) {
+    result.sessionValid = !!checkinInfo.logged_in;
+    if (result.sessionValid) {
+      result.me = { id: userId, username: checkinInfo.username || "", quota: checkinInfo.quota };
+    }
+  } else if (bundle) {
     result.me = bundle.user;
     result.sessionValid = true;
-    result.v1x = true;   // new-api v1.x：接口只认 Bearer 令牌，cookie 方式不适用
   } else {
     try {
       const me = userFromSelf(await callApi(site + "/api/user/self", { userId: userId }));
@@ -62,9 +87,13 @@ async function collectSite(site, manualUserId) {
   }
   if (!result.me) return result;
 
-  // 4. 访问令牌：临时令牌只是钥匙 —— 先用它换长效系统访问令牌（GET /api/user/token），
-  //    换不到再走原有兜底链（/api/user/self 字段 → 候选验证 → GET /api/user/token），
-  //    最后才是临时轮换令牌兜底（标注短期）。
+  // 4. 访问令牌（独立签到系统没有令牌体系 —— cookie 即凭证）
+  if (result.siteType === "checkin-system") {
+    result.accessTokenNote = "独立签到系统无需访问令牌 —— cookie 即凭证（workflow 用 cookie 方式签到）";
+    return result;
+  }
+
+  // 临时令牌只是钥匙：先换长效系统访问令牌，换不到再走兜底链，最后才是临时令牌
   const temp = (bundle && bundle.access_token) || "";
   let resolved = null;
   if (temp) {

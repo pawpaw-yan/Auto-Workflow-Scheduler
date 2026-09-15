@@ -173,3 +173,14 @@ async function bootstrapV1Auth(site) {
     return null;
   }
 }
+/** 独立签到系统（LinuxDo OAuth + PoW）的状态口：GET /api/info。
+    是这类站（响应里有 logged_in 键）返回 { ok: true, info }，否则 { ok: false }。 */
+async function fetchCheckinInfo(site) {
+  try {
+    const data = await callApi(site + "/api/info", { credentials: "include" });
+    if (data && typeof data === "object" && "logged_in" in data) return { ok: true, info: data };
+    return { ok: false };
+  } catch (e) {
+    return { ok: false };
+  }
+}
