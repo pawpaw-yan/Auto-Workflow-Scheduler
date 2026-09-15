@@ -10,35 +10,61 @@ name: oracle-abc
 #       抢到后停止并升级为 2 OCPU / 12 GB；若已抢到则直接升级。
 #
 # 触发方式：
-#   1) 总入口派发：run-project.yml 传 project=oracle-abc
+#   1) 总入口派发：run-project.yml 传 project=oracle-abc（⚠️ 总入口不能再传参数）
 #   2) 直接调用 API：
 #      POST /repos/<owner>/<repo>/actions/workflows/oracle-abc.yml/dispatches
-#      {"ref":"main"}
-#   3) Actions 页面手动 Run workflow
+#      {"ref":"main","inputs":{"TARGET_OCPUS":"4"}}
+#   3) Actions 页面手动 Run workflow —— 每个可覆盖项都是一个独立输入框
 #
 # 典型用法：由外部调度器（cron-job.org 等）每 5 分钟触发一次，
 #          因为 A1 常年缺货，"没抢到"是预期内结果，脚本会正常退出 0。
 #
 # 配置来源优先级（高 → 低）：
-#     ref（inputs.overrides）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
-# ⚠️ 覆盖时要用**脚本读取的变量名**（如 TARGET_OCPUS），不是 GitHub Variable 名（TARGET）。
+#     ref（同名 input）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
+# 前两层都在下面的 env: 里完成，每个键一行：
+#     KEY: ${{ inputs.KEY || vars.KEY }}        # 机密项写 secrets.KEY
+# 空字符串视为「没传」，所以留空会自动回落到仓库配置。
+#
+# ✅ **input 的名字 = 进程里的变量名**，所以以前那个「该写 TARGET 还是 TARGET_OCPUS」
+#    的坑没有了 —— 输入框叫什么，变量就叫什么，也对得上 SECRET_NAMES / VARIABLE_NAMES。
 #
 # .env 是最低优先级，由 Python 侧在运行期读取（python/common/dotenv.py），不在 workflow 里体现。
 #
-# ⚠️ 别在某个 step 的 env: 里声明上面的配置键 —— step 级 env 会压过 $GITHUB_ENV，
-#    让 inputs.overrides 静默失效（不报错，只是不生效）。原理见根 README §11.1。
-#
 # 通用逻辑全部在 common/*.sh，本文件只做「声明」：
-#   common/apply-overrides.sh  ref 层：应用 inputs.overrides
+#   common/report-inputs.sh  ref 层：报告本次传了哪些项 + 机密项告警（没传则跳过）
 # ═══════════════════════════════════════════════════════════════════════
 
 on:
   workflow_dispatch:
+    # 每个可覆盖项一个输入框，留空 = 用仓库里配的 vars / secrets。
+    # ⚠️ input 不是机密：传了就等于公开（公开仓库的 run 详情页人人可见）。
+    #
+    # 这里只列出**日常会临时调的**几个。其余 OCI_* 标识符也想用 ref 传的话，照着格式
+    # 加一个同名 input 即可（名字必须等于进程里的变量名），再在 env: 里接上 `||`。
+    # ⚠️ OCI_CLI_KEY_CONTENT（私钥）**故意不开放 ref 传参** —— 它只该放 secret。
     inputs:
-      # 可选：JSON 对象，本次运行用它的值替换下面的 vars / secrets。
-      # 只列名字不列值，且值会注册进日志遮蔽列表。留空 = 完全使用仓库配置。
-      overrides:
-        description: 'JSON：临时覆盖 vars/secrets，如 {"TARGET_OCPUS":"4"}；留空 = 用仓库配置'
+      GRAB_OCPUS:
+        description: '抢占时申请的 OCPU 数，越小越容易抢到（留空 = 用仓库配置）'
+        required: false
+        default: ''
+        type: string
+      GRAB_MEMORY_GB:
+        description: '抢占时申请的内存 GB（留空 = 用仓库配置）'
+        required: false
+        default: ''
+        type: string
+      TARGET_OCPUS:
+        description: '升级的最终目标 OCPU 数（留空 = 用仓库配置）'
+        required: false
+        default: ''
+        type: string
+      OCI_AVAILABILITY_DOMAIN:
+        description: '可用域（留空 = 用仓库配置）'
+        required: false
+        default: ''
+        type: string
+      OCI_INSTANCE_NAME:
+        description: '实例显示名，脚本按它查找/创建（留空 = 用仓库配置）'
         required: false
         default: ''
         type: string
@@ -82,10 +108,10 @@ jobs:
       OCI_CLI_TENANCY:          ${{ vars.OCI_CLI_TENANCY }}
       OCI_CLI_REGION:           ${{ vars.OCI_CLI_REGION }}
       OCI_COMPARTMENT_ID:       ${{ vars.OCI_COMPARTMENT_ID }}
-      OCI_AVAILABILITY_DOMAIN:  ${{ vars.OCI_AVAILABILITY_DOMAIN }}
+      OCI_AVAILABILITY_DOMAIN:  ${{ inputs.OCI_AVAILABILITY_DOMAIN || vars.OCI_AVAILABILITY_DOMAIN }}
       OCI_SUBNET_ID:            ${{ vars.OCI_SUBNET_ID }}
       OCI_IMAGE_ID:             ${{ vars.OCI_IMAGE_ID }}
-      OCI_INSTANCE_NAME:        ${{ vars.OCI_INSTANCE_NAME }}
+      OCI_INSTANCE_NAME:        ${{ inputs.OCI_INSTANCE_NAME || vars.OCI_INSTANCE_NAME }}
       # SSH 公钥：必填。创建实例时注入，不填则实例建出来无法登录。
       # 公钥本身不是机密，放 Variables；但请务必确认粘的是 .pub 文件内容，
       # 代码会拦截「误把私钥粘进来」的情况。
@@ -104,13 +130,16 @@ jobs:
       #
       # 留空则用脚本内默认值（抢 1c6g、目标 2c）
       # ─────────────────────────────────────────────────────────────
-      GRAB_OCPUS:     ${{ vars.OCPU }}
-      GRAB_MEMORY_GB: ${{ vars.MEMORY }}
-      TARGET_OCPUS:   ${{ vars.TARGET }}
+      # ⚠️ 左边为空（没传参）就取右边。输入框的名字是 GRAB_OCPUS / GRAB_MEMORY_GB /
+      #    TARGET_OCPUS（进程里的变量名），不是 GitHub Variable 名（OCPU / MEMORY / TARGET）。
+      GRAB_OCPUS:     ${{ inputs.GRAB_OCPUS || vars.OCPU }}
+      GRAB_MEMORY_GB: ${{ inputs.GRAB_MEMORY_GB || vars.MEMORY }}
+      TARGET_OCPUS:   ${{ inputs.TARGET_OCPUS || vars.TARGET }}
 
-      # ── 参数覆盖：workflow_dispatch 的 inputs.overrides（JSON 单行）──
-      #    留空 → common/apply-overrides.sh 整步跳过，继续用上面的 vars / secrets。
-      OVERRIDES:      ${{ inputs.overrides }}
+      # ── 本次 ref 传了哪些项 ──
+      #    只给 common/report-inputs.sh 用：报告名称 + 长度、给机密项打 ::warning::。
+      #    它读**原始 inputs**，而不是上面回落后的值 —— 否则分不清「传了」和「没传」。
+      REF_INPUTS:     ${{ toJSON(inputs) }}
 
       # 可选：每轮放大倍数，默认 2（翻倍：1c→2c→4c）。设为 1 则逐级 +1
       # STEP_FACTOR:     ${{ vars.STEP_FACTOR }}
@@ -137,18 +166,18 @@ jobs:
       #   variables  → 输出明文值
       # ⚠️ 必须写**进程里真实存在的变量名**：OCPU / MEMORY / TARGET 只是 GitHub Variable
       #    的显示名，上面已被映射成 GRAB_OCPUS / GRAB_MEMORY_GB / TARGET_OCPUS。
-      #    写成原名的话自检表永远显示空，而且 inputs.overrides 覆盖它也不生效。
-      #    这两份清单同时也是 apply-overrides.sh 的默认覆盖白名单。
+      #    写成原名的话自检表永远显示空。
+      # SECRET_NAMES 同时给 report-inputs.sh 用：在里面且被 ref 传入的项会打 ::warning::
       SECRET_NAMES:   "OCI_CLI_KEY_CONTENT"
       VARIABLE_NAMES: "OCI_CLI_USER OCI_CLI_FINGERPRINT OCI_CLI_TENANCY OCI_CLI_REGION OCI_COMPARTMENT_ID OCI_AVAILABILITY_DOMAIN OCI_SUBNET_ID OCI_IMAGE_ID OCI_INSTANCE_NAME OCI_SSH_PUBLIC_KEY GRAB_OCPUS GRAB_MEMORY_GB TARGET_OCPUS"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 必须排在 Check secrets / Run 之前：它把覆盖值写进 GITHUB_ENV，
-      # 后续 step（含自检表）读到的才是本次真正生效的配置。
-      - name: Apply overrides
-        run: bash common/apply-overrides.sh
+      # 报告本次通过 ref 传了哪些项（只列名称和长度）、给机密项打 ::warning::。
+      # 注意：**值的生效不靠这一步** —— 靠上面 env: 里的 `inputs.X || vars.X`。
+      - name: Report ref inputs
+        run: bash common/report-inputs.sh
 
       - name: Setup Python
         uses: actions/setup-python@v5

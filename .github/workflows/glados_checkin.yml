@@ -7,24 +7,26 @@ name: glados_checkin
 # 对应环境：python_glados_checkin
 #
 # 触发方式：
-#   1) 总入口派发：run-project.yml 传 project=glados_checkin
+#   1) 总入口派发：run-project.yml 传 project=glados_checkin（⚠️ 总入口不能再传参数）
 #   2) 直接调用 API：
 #      POST /repos/<owner>/<repo>/actions/workflows/glados_checkin.yml/dispatches
-#      {"ref":"main","inputs":{"overrides":"{\"DOMAINS\":\"glados.cloud\"}"}}
-#   3) Actions 页面手动 Run workflow（可填 overrides）
+#      {"ref":"main","inputs":{"DOMAINS":"glados.cloud"}}
+#   3) Actions 页面手动 Run workflow —— 每个可覆盖项都是一个独立输入框
 #
 # 配置来源优先级（高 → 低）：
-#     ref（inputs.overrides）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
-# 前两层由本文件和 common/apply-overrides.sh 完成；.env 是最低优先级，
+#     ref（同名 input）  >  vars / secrets（本文件的 env:）  >  <项目目录>/.env
+# 前两层都在下面的 env: 里完成，每个键一行：
+#     KEY: ${{ inputs.KEY || vars.KEY }}        # 机密项写 secrets.KEY
+# 空字符串视为「没传」，所以留空会自动回落到仓库配置。.env 是最低优先级，
 # 由 Python 侧在运行期读取（python/common/dotenv.py），不在 workflow 里体现。
-# 被替换 / 被补入的项都只在日志与 Job Summary 里列**名字**，不回显值。
+# 被传入 / 被补入的项都只在日志与 Job Summary 里列**名字和长度**，不回显值。
 #
-# ⚠️ 别在某个 step 的 env: 里声明上面的配置键 —— step 级 env 会压过 $GITHUB_ENV，
-#    让 inputs.overrides 静默失效（不报错，只是不生效）。原理见根 README §11.1。
+# ⚠️ 「没传参」却没有回落到仓库配置时，先查这两处：`||` 右边写的是不是 vars/secrets
+#    （写错来源会静默解析成空字符串），以及 GitHub 上那个 Variable 是不是真的建了。
 #
 # 通用逻辑全部在 common/*.sh，本文件只做「声明」：
 #   common/install-deps.sh     依赖安装（按 LANG_NAME 分支）
-#   common/apply-overrides.sh  ref 层：应用 inputs.overrides
+#   common/report-inputs.sh    报告本次 ref 传了哪些项 + 机密项告警（没传则跳过）
 #   common/check-secrets.sh    配置自检（默认跳过；DEBUG_MODE 开启时输出明文 + HMAC 指纹）
 #   common/execute.sh          按 ENTRY 扩展名执行
 #
@@ -33,11 +35,32 @@ name: glados_checkin
 
 on:
   workflow_dispatch:
+    # 每个可覆盖项一个输入框，留空 = 用仓库里配的 vars / secrets。
+    # ⚠️ input 不是机密：传了就等于公开（公开仓库的 run 详情页人人可见），
+    #    带凭证的项（COOKIES / PUSHDEER_SENDKEY）请谨慎使用。
     inputs:
-      # 可选：JSON 对象，本次运行用它的值替换下面的 vars / secrets。
-      # 只列名字不列值，且值会注册进日志遮蔽列表。留空 = 完全使用仓库配置。
-      overrides:
-        description: 'JSON：临时覆盖 vars/secrets，如 {"DOMAINS":"glados.cloud"}；留空 = 用仓库配置'
+      COOKIES:
+        description: '账号 Cookie，每行一个，与 DOMAINS 按行对应。⚠️ 传入=公开，慎用'
+        required: false
+        default: ''
+        type: string
+      DOMAINS:
+        description: '签到域名，每行一个，行数须与 COOKIES 一致（如 glados.cloud）'
+        required: false
+        default: ''
+        type: string
+      GLADOS_EXCHANGE_PLAN:
+        description: '兑换计划：plan100 / plan200 / plan500；留空 = 不兑换'
+        required: false
+        default: ''
+        type: string
+      GLADOS_VERBOSE:
+        description: '输出详细日志：true / false（留空 = 用仓库配置）'
+        required: false
+        default: ''
+        type: string
+      PUSHDEER_SENDKEY:
+        description: 'PushDeer 推送密钥。⚠️ 传入=公开'
         required: false
         default: ''
         type: string
@@ -62,23 +85,26 @@ jobs:
       PROJECT:   glados_checkin
       ENTRY:     python/glados_checkin/index.py
 
-      # ── 敏感值 → Environment secrets，用 secrets.* 引用 ──
+      # ── 配置来源：同名 input 优先，留空自动回落到 vars / secrets ──
+      #    `||` 左边为空（没传参）就取右边。写错来源（该用 vars 却写了 secrets）
+      #    会静默解析成空字符串，代码里有默认值兜底，所以不报错但配置不生效。
+      #
       #    COOKIES 是**多行**：一行一个账号的 cookie，与 DOMAINS 按行一一对应。
       #    单个 cookie 形如 `koa:sess=xxx; koa:sess.sig=yyy`，行内绝不能有换行。
-      COOKIES:                ${{ secrets.COOKIES }}
-      PUSHDEER_SENDKEY:       ${{ secrets.PUSHDEER_SENDKEY }}
-
-      # ── 非敏感配置 → Environment variables，用 vars.* 引用 ──
-      #    写错来源（该用 vars 却写了 secrets）会静默解析成空字符串，
-      #    代码里有默认值兜底，所以不会报错但配置不生效。
       #    DOMAINS 同为多行，行数必须与 COOKIES 一致（同域名多账号就重复写域名）。
-      DOMAINS:                ${{ vars.DOMAINS }}
-      GLADOS_EXCHANGE_PLAN:   ${{ vars.GLADOS_EXCHANGE_PLAN }}
-      GLADOS_VERBOSE:         ${{ vars.GLADOS_VERBOSE }}
+      #
+      #    ⚠️ 留空 = 回落，所以**没法用「留空」表示「本次不兑换」** ——
+      #       要临时关掉兑换请填 `GLADOS_EXCHANGE_PLAN=none`（脚本认这个值）。
+      COOKIES:                ${{ inputs.COOKIES || secrets.COOKIES }}
+      PUSHDEER_SENDKEY:       ${{ inputs.PUSHDEER_SENDKEY || secrets.PUSHDEER_SENDKEY }}
+      DOMAINS:                ${{ inputs.DOMAINS || vars.DOMAINS }}
+      GLADOS_EXCHANGE_PLAN:   ${{ inputs.GLADOS_EXCHANGE_PLAN || vars.GLADOS_EXCHANGE_PLAN }}
+      GLADOS_VERBOSE:         ${{ inputs.GLADOS_VERBOSE || vars.GLADOS_VERBOSE }}
 
-      # ── 参数覆盖：workflow_dispatch 的 inputs.overrides（JSON 单行）──
-      #    留空 → common/apply-overrides.sh 整步跳过，继续用上面的 vars / secrets。
-      OVERRIDES:              ${{ inputs.overrides }}
+      # ── 本次 ref 传了哪些项 ──
+      #    只给 common/report-inputs.sh 用：报告名称 + 长度、给机密项打 ::warning::。
+      #    它读**原始 inputs**，而不是上面回落后的值 —— 否则分不清「传了」和「没传」。
+      REF_INPUTS:             ${{ toJSON(inputs) }}
 
       # ── 指纹密钥：仓库级 secret，只供 check-secrets.sh 生成 HMAC 指纹，本身绝不打印 ──
       COMMON_FINGERPRINT_KEY: ${{ secrets.COMMON_FINGERPRINT_KEY }}
@@ -96,20 +122,17 @@ jobs:
       # 需要自检的名称，空格分隔（仅在调试开关开启时才会被读取与输出）。
       #   SECRET_NAMES   → 只输出 HMAC 指纹（值不可见，永不打印明文）
       #   VARIABLE_NAMES → 输出明文值
+      # 这份清单同时给 report-inputs.sh 用：在里面且被 ref 传入的项会打 ::warning::
       SECRET_NAMES:   "COOKIES PUSHDEER_SENDKEY"
       VARIABLE_NAMES: "DOMAINS GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
-
-      # 允许被 inputs.overrides 替换的项。留空/不写则回落到 SECRET_NAMES + VARIABLE_NAMES
-      # （上面的自检清单）——两者都空时 apply-overrides.sh 会拒绝覆盖。
-      # OVERRIDE_NAMES: "COOKIES DOMAINS GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 必须排在 Check secrets / Run 之前：它把覆盖值写进 GITHUB_ENV，
-      # 后续 step（含自检表）读到的才是本次真正生效的配置。
-      - name: Apply overrides
-        run: bash common/apply-overrides.sh
+      # 报告本次通过 ref 传了哪些项（只列名称和长度）、给机密项打 ::warning::。
+      # 注意：**值的生效不靠这一步** —— 靠上面 env: 里的 `inputs.X || secrets.X`。
+      - name: Report ref inputs
+        run: bash common/report-inputs.sh
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -38,12 +38,12 @@
 #        <站点地址>|<账号标签>|<cookie 或 token[=用户ID]>|<凭证>
 #
 # 配置来源（优先级从高到低）：ref > vars / secrets > <项目目录>/.env
-# ref 层完全由通用脚本 common/apply-overrides.sh 实现（写进 $GITHUB_ENV），
-# 本脚本不做任何特殊处理 —— 和 glados_checkin / oracle-abc 走的是同一条路。
+# ref 层由 workflow 里那行 `KEY: ${{ inputs.KEY || secrets.KEY }}` 实现 ——
+# 本脚本不做任何特殊处理，ref / vars / secrets / .env 全都以普通环境变量到达。
 #
 # ⚠️ 用 ref 传凭证等同于公开：workflow_dispatch 的 inputs 不受脱敏保护，
 #    公开仓库的 run 详情页任何人都能看到。详见 README 的「用 ref 传账号」。
-#    但**告警由通用层统一发** —— common/apply-overrides.sh 会检查被覆盖的项里
+#    但**告警由通用层统一发** —— common/report-inputs.sh 会检查被传入的项里
 #    有没有登记在 SECRET_NAMES 的，本脚本不做任何 ref 相关的特殊处理。
 #
 # 退出码：
@@ -462,8 +462,8 @@ class Config:
     def load(cls) -> "Config":
         config = cls()
 
-        # 直接读进程环境：ref 已由 common/apply-overrides.sh 写进 $GITHUB_ENV，
-        # 和 vars / secrets / .env 一起，走到这里全都躺在 os.environ 里了。
+        # 直接读进程环境：ref / vars / secrets / .env 已在 workflow 的 env: 里合并好，
+        # 走到这里全都躺在 os.environ 里了。
         raw_sites = (os.environ.get(ENV_SITES) or "").strip()
         if not raw_sites:
             logger.warning(
