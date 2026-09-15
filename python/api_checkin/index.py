@@ -8,7 +8,7 @@
 #   cookie —— 浏览器登录后的会话 Cookie，形如 `session=xxx` 或 `new-api-session=xxx`
 #   token  —— 「个人设置 → 安全设置 → 系统访问令牌」生成的那一串
 #
-#   ⚠️ **系统访问令牌不一定是 `sk-` 开头。** 新版生成的是 `aNSC...Y/8` 这类随机串；
+#   ⚠️ **系统访问令牌不一定是 `sk-` 开头。** 新版生成的是 `<令牌>` 这类随机串；
 #      `sk-` 开头的通常只是「模型调用 key」，老 one-api / 部分 fork 的 sk- 不能用于管理接口。
 #      下面的自动判断只认 `sk-` 前缀，所以**令牌请一律显式写** `token:<值>`
 #      或 `{"token":"..."}` —— 否则要么直接报错，要么因含 `=` 被误判成 cookie。
@@ -29,7 +29,7 @@
 #        // 分桶：桶名即类型，桶内元素**一律是对象**，所以不做任何猜测 ——
 #        //      非 sk- 开头的令牌也能直接用；user_id / label 总有地方放。
 #        {"https://a.com": {"cookies": [{"cookie": "session=xxx"}],
-#                           "tokens":  [{"token": "aNSC...Y/8", "user_id": "38798",
+#                           "tokens":  [{"token": "<令牌>", "user_id": "<用户ID>",
 #                                        "label": "备用"}]},
 #         "https://b.com": {"tokens": [{"token": "sk-zzz"}]}}
 #        // 扁平数组（早期写法）：靠自动判断类型，非 sk- 令牌必须写 `token:` 前缀
@@ -248,7 +248,7 @@ def _detect_credential(text: str, where: str) -> Tuple[str, str]:
       4. 都判断不出来 → 报错，让人加前缀，**不猜**
 
     ⚠️ 第 2、3 条只是**启发式**，对「系统访问令牌」并不可靠：新版令牌形如
-    `aNSC...Y/8`，既不以 `sk-` 开头（→ 落到第 4 条报错），
+    `<令牌>`，既不以 `sk-` 开头（→ 落到第 4 条报错），
     也可能因 base64 填充以 `=` 结尾（→ 被第 3 条**误判成 cookie**，请求头发错 → 401）。
     所以令牌一律显式写 `token:<值>`。
     """
@@ -330,7 +330,7 @@ def parse_sites_json(raw: str) -> List[Account]:
         {
           "https://站点A": {
             "cookies": [{"cookie": "session=xxx"}],
-            "tokens":  [{"token": "aNSC...Y/8", "user_id": "38798", "label": "备用"}]
+            "tokens":  [{"token": "<令牌>", "user_id": "<用户ID>", "label": "备用"}]
           },
           "https://站点B": {"tokens": [{"token": "sk-qqq"}]}
         }
@@ -409,7 +409,7 @@ def _accounts_from_buckets(site: str, buckets: dict, where: str) -> List[Account
 
     桶内元素**一律是对象**：
 
-        {"tokens": [{"token": "aN9...Y/8", "user_id": "38798", "label": "备用"}]}
+        {"tokens": [{"token": "<令牌>", "user_id": "<用户ID>", "label": "备用"}]}
 
     `user_id` / `label` 可省略。只有一种元素形态，不用再记「什么时候该包成对象」；
     桶名 + 对象字段名两处都声明了类型，所以也**不做任何猜测** ——
@@ -425,7 +425,7 @@ def _accounts_from_buckets(site: str, buckets: dict, where: str) -> List[Account
         if any(key in ("user_id", "label") for key in unknown):
             hint = (
                 "。⚠️ `user_id` / `label` 是**单个账号**的字段，不能放在这一层，"
-                '要写成桶内的对象元素：{"tokens":[{"token":"...","user_id":"38798"}]}'
+                '要写成桶内的对象元素：{"tokens":[{"token":"...","user_id":"<用户ID>"}]}'
             )
         raise ConfigError(
             f"{where}：不认识的分桶 {unknown}。只支持 `cookies` / `tokens`"

@@ -111,6 +111,59 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 > 想省事就直接 `cp .env.example .env`，模板里已经写好了。
 > ⚠️ 但这个文件里含凭证，**别提交、别外发**。
 
+### 用篡改猴脚本：`sites_from_lines.user.js`
+
+行格式适合**维护**（一行一个账号、类型独立成段、凭证放最后所以带 `|` 也不怕），
+JSON 适合**派发**（`workflow_dispatch` 的 input 只有字符串通道）。手工互抄容易漏括号、
+抄错桶名，所以同目录放了个[篡改猴](https://www.tampermonkey.net/)（Tampermonkey）脚本，
+把这一步直接做进页面里。
+
+**装法**：篡改猴 → 添加新脚本 → 把 [`sites_from_lines.user.js`](sites_from_lines.user.js)
+整段贴进去保存。它管两件事：
+
+#### ① 在 GitHub 派发页转换并填入
+
+打开 `…/actions/workflows/api_checkin.yml` → 点 **Run workflow**，`SITES` 输入框下面会多一个
+**⇄ 行格式转换** 按钮。点开粘行格式、看实时结果，点「填入 SITES 输入框」写进去，
+再点 GitHub 自己的 Run workflow 即可。
+
+> **这是它比另开一个工具强的地方**：`workflow_dispatch` 的 `type: string` 输入框是**单行**的，
+> 多行账号表根本粘不进去；脚本用一个多行文本框接手，转换完再写回那个输入框。
+
+#### ② 在自己的 new-api / one-api 站点上一次提取账号
+
+登录站点后右下角会出现 **🍪 提取账号** 按钮（也可以从篡改猴菜单里唤起）：
+
+| 取什么 | 怎么取 |
+|---|---|
+| 用户 ID | `GET /api/user/self`，顺便确认会话有效 |
+| 访问令牌 | `GET /api/token/` 列出；**没有就点「＋ 新建令牌」调 `POST /api/token/` 建一个**（永不过期 + 不限额） |
+| 会话 Cookie | `document.cookie` |
+
+挑好凭证来源，直接给出**行格式**和 **SITES JSON**，一键复制。
+
+- **令牌会被真的验证**：用 `credentials:'omit'`（不带会话 cookie）单独发一次请求，
+  免得被浏览器会话「救活」造成假阳性 —— 验证过了才是真能用
+- **Cookie 有可能读不到**：会话 cookie 若是 `httpOnly`，JS 就拿不到。脚本会明说，
+  并让你按 F12 → Network 复制（即上面「凭证怎么拿」的方式二）
+
+脚本**只访问站点自己的接口**，不往任何第三方发数据。`@match` 默认 `*://*/*`，
+想更安静就把那行换成你的站点域名（如 `// @match https://example.com/*`）；
+在普通页面上它什么都不做。
+
+校验口径与 `index.py` 的 `parse_sites()` **完全一致**（4 段、站点必须带 `http(s)://`
+且**大小写敏感**、类型只能 `cookie` / `token`、凭证非空、空行与 `#` 跳过），
+所以脚本不报错 = `api_checkin` 能跑。
+
+> 💡 账号表存成 `sites.txt` 放着也行 —— **它在 `.gitignore` 里**，
+> 免得含凭证的文件被误提交（模板请另起名字，例如 `sites.example.txt`）。
+
+> ⚠️ 有两处顺序会变，是分桶结构本身决定的，不是 bug：
+> 站点与桶按**首次出现**排列；同一个站点如果 cookie 和 token **交错**着写，
+> 转出来会按类型分成两个桶，账号顺序跟着变。
+>
+> 💡 `label` 段留空时不会写进 JSON（JSON 侧会用 `#序号` 兜底，签到不受影响）。
+
 ---
 
 ## 用 ref 传账号（可选，但请先读警告）
@@ -122,13 +175,13 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 **① `SITES` 的值**（账号表本身）—— Actions 页面上那个 `SITES` 输入框填它：
 
 ```json
-{"https://a.com":{"cookies":[{"cookie":"session=xxx"}],"tokens":[{"token":"aNSC....Y/8"},{"token":"sk-zzz","user_id":"1001","label":"小号"}]},"https://b.com":{"tokens":[{"token":"sk-qqq"}]}}
+{"https://a.com":{"cookies":[{"cookie":"session=xxx"}],"tokens":[{"token":"<令牌>"},{"token":"sk-zzz","user_id":"1001","label":"小号"}]},"https://b.com":{"tokens":[{"token":"sk-qqq"}]}}
 ```
 
 **② 完整的 HTTP body** —— curl / cron-job.org 填它：参数名叫 `SITES`，值是**转义过的字符串**：
 
 ```json
-{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"aNSC....Y/8\"}]}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"<令牌>\"}]}}"}}
 ```
 
 > ⚠️ **别把这两个混起来。** 最常见的错误写法是把账号表直接放在顶层：
@@ -158,7 +211,7 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 **只有一种形态**，不用记「什么时候该包成对象」：
 
 ```json
-{"tokens": [{"token": "aNSC....Y/8"}, {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]}
+{"tokens": [{"token": "<令牌>"}, {"token": "sk-zzz", "user_id": "1001", "label": "小号"}]}
 ```
 
 | 字段 | 是什么 | 从哪来 / 什么时候要 |
@@ -194,7 +247,7 @@ SITES="https://a.com|主号|token|sk-aaa\nhttps://a.com|小号|cookie|session=bb
 
 ```bash
 gh workflow run api_checkin.yml \
-  -f SITES='{"https://a.com":{"tokens":[{"token":"aNSC....Y/8"}]}}'
+  -f SITES='{"https://a.com":{"tokens":[{"token":"<令牌>"}]}}'
 ```
 
 外层单引号让 shell 原样传递，`gh` 自己负责编码成合法的 JSON body。
@@ -212,13 +265,13 @@ gh workflow run api_checkin.yml \
 参数名就是 `SITES`，只是值是**字符串**，所以账号表那段 JSON 要转义一遍：
 
 ```json
-{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"aNSC....Y/8\"}]}}"}}
+{"ref":"main","inputs":{"SITES":"{\"https://a.com\":{\"tokens\":[{\"token\":\"<令牌>\"}]}}"}}
 ```
 
 别手写，交给 `jq` 生成：
 
 ```bash
-body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":[{"token":"aNSC....Y/8"}]}}' \
+body=$(jq -nc --argjson sites '{"https://a.com":{"tokens":[{"token":"<令牌>"}]}}' \
         '{ref:"main", inputs:{SITES: ($sites | tojson)}}')
 curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github+json" \
   https://api.github.com/repos/<owner>/<repo>/actions/workflows/api_checkin.yml/dispatches \
@@ -247,8 +300,8 @@ curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github
 |---|---|
 | `"session=xxx"` | 含 `=` → cookie |
 | `"sk-yyy"` | `sk-` 开头 → 令牌 |
-| `"aNSC....Y/8"` | 都不沾 → **报错**，必须写 `token:` 前缀 |
-| `"aNSC...8="` | 含 `=` → **被误判成 cookie**，请求头整个发错 → 401 |
+| `"<令牌>"` | 都不沾 → **报错**，必须写 `token:` 前缀 |
+| `"<令牌>="` | 含 `=` → **被误判成 cookie**，请求头整个发错 → 401 |
 | `"token:任意值"` / `"cookie:任意值"` | 前缀强制指定 |
 | `{"token": "..."}` / `{"cookie": "..."}` | 对象显式指定 |
 
@@ -258,7 +311,7 @@ curl -X POST -H "Authorization: Bearer <PAT>" -H "Accept: application/vnd.github
 
 站点只挂一个账号时，扁平写法可以省掉数组：`{"https://a.com": "session=xx"}`。
 ⚠️ 这个简写走自动判断，非 `sk-` 令牌仍需 `token:` 前缀 —— 那种情况就写
-`{"https://a.com": {"tokens": [{"token": "aNSC....Y/8"}]}}`。
+`{"https://a.com": {"tokens": [{"token": "<令牌>"}]}}`。
 
 ### ⚠️ 用 ref 传凭证 = 公开这些凭证
 
@@ -300,7 +353,7 @@ SITES: ${{ inputs.SITES || secrets.SITES }}
 
 1. 浏览器登录站点
 2. 进 **个人设置 → 安全设置 → 系统访问令牌**
-3. 生成并复制那一串（形如 `aNSC...Y/8` 的随机串**也可能**是 `sk-...`，两种都正常）
+3. 生成并复制那一串（形如 `<令牌>` 的随机串**也可能**是 `sk-...`，两种都正常）
 
 对应请求头 `Authorization: Bearer <令牌>`。
 
@@ -309,10 +362,10 @@ SITES: ${{ inputs.SITES || secrets.SITES }}
 >
 > | 写法 | 结果 |
 > |---|---|
-> | `"token:aNSC....Y/8"` | ✅ 当令牌（推荐） |
-> | `{"token":"aNSC....Y/8"}` | ✅ 当令牌，还能顺带带 `user_id` |
-> | `"aNSC....Y/8"` 裸写 | ❌ **报错**：判断不出类型 |
-> | `"aNSC...8="` 裸写、恰好以 `=` 结尾 | ❌ **被误判成 cookie**，请求头整个发错 → 401 |
+> | `"token:<令牌>"` | ✅ 当令牌（推荐） |
+> | `{"token":"<令牌>"}` | ✅ 当令牌，还能顺带带 `user_id` |
+> | `"<令牌>"` 裸写 | ❌ **报错**：判断不出类型 |
+> | `"<令牌>="` 裸写、恰好以 `=` 结尾 | ❌ **被误判成 cookie**，请求头整个发错 → 401 |
 >
 > 最后一行是真实风险：base64 令牌经常以 `=` 结尾。**别省那几个字符。**
 
@@ -505,6 +558,7 @@ python index.py
 | 文件 | 作用 |
 |---|---|
 | `python/api_checkin/index.py` | 入口脚本 |
+| `python/api_checkin/sites_from_lines.user.js` | 篡改猴脚本：GitHub 派发页「行格式 → JSON 并填入」+ 站点侧一键提取 cookie / 用户ID / 令牌（不参与 Actions） |
 | `python/api_checkin/.env.example` | `.env` 模板（提交；只放占位符）。同目录的 `.env` 才是实际生效的那个，已被 gitignore |
 | `.github/workflows/api_checkin.yml` | 项目 workflow |
 | `python/common/dotenv.py` | Python 语言级共享的 `.env` 读取 |
