@@ -18,6 +18,19 @@ async function runTokenTest() {
 }
 
 async function runCookieTest() {
+  // v1.x 站（new_api_refresh cookie 是标志）：接口不认 cookie，cookie 测试的真实含义
+  // 是「刷新令牌能不能换出新的访问令牌」—— 直接走一次自举来验证
+  if ((extractState && extractState.v1x) || /(^|;\s*)new_api_refresh=/.test(byId("cookieField").value)) {
+    const site = normSite();
+    setStatus("testResult", "正在用刷新令牌自举（在站点标签页内发请求）…");
+    const boot = await bootstrapV1Auth(site);
+    if (boot && boot.ok) {
+      setStatus("testResult", "✅ 刷新令牌有效：已换出新的访问令牌（用户 " + (boot.user.username || boot.user.id) + "）");
+    } else {
+      setStatus("testResult", "❌ 刷新令牌没过：" + ((boot && boot.reason) || "未知原因"), true);
+    }
+    return;
+  }
   const site = normSite();
   let userId = (extractState && extractState.userId) || byId("userIdInput").value.trim();
   if (!userId) {

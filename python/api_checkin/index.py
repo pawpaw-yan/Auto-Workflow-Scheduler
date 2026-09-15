@@ -670,7 +670,15 @@ class SiteClient:
         短时 access_token，之后全部请求走令牌头。失败返回 False、维持原方式。"""
         try:
             response = self.session.post(
-                f"{self.account.site}/api/user/auth/refresh", timeout=self.timeout
+                f"{self.account.site}/api/user/auth/refresh",
+                timeout=self.timeout,
+                headers={
+                    # 该端点校验 Origin（CSRF 防护）：无 Origin 或外域 Origin 都会被
+                    # 403 AUTH_ORIGIN_FORBIDDEN 拒掉 —— 报文要装作站点前端自己发的
+                    "Origin": self.account.site,
+                    "Referer": self.account.site + "/",
+                    "Content-Type": "application/json",
+                },
             )
             data = response.json()
         except (requests.exceptions.RequestException, ValueError):

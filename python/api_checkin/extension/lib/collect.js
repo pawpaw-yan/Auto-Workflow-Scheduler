@@ -22,8 +22,15 @@ async function collectSite(site, manualUserId) {
 
   // 2. 用户 ID：手填 → 站点 localStorage（注入）→ new-api v1.x 自举
   let userId = String(manualUserId || "").trim();
+  // new_api_refresh 是 v1.x 的标志 cookie —— 它在就必须走自举（v1.x 接口不认 cookie，
+  // 哪怕 ID 是手填的，标准会话检查也必然 401 "access token 无效"）
+  const hasV1Refresh = result.cookieNames.indexOf("new_api_refresh") !== -1;
   let bundle = null;
   if (!userId) {
+    const cached = await readSiteLocalStorage(site);
+    if (cached && cached.id) userId = cached.id;
+  }
+  if (hasV1Refresh || !userId) {
     const cached = await readSiteLocalStorage(site);
     if (cached && cached.id) userId = cached.id;
   }
