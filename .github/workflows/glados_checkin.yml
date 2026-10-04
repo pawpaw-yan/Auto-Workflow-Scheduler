@@ -64,6 +64,16 @@ on:
         required: false
         default: ''
         type: string
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram Bot Token，签到失败时推送提醒。⚠️ 传入=公开，慎用'
+        required: false
+        default: ''
+        type: string
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram Chat ID，签到失败时推送提醒。⚠️ 传入=公开'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: glados_checkin
@@ -95,8 +105,13 @@ jobs:
       #
       #    ⚠️ 留空 = 回落，所以**没法用「留空」表示「本次不兑换」** ——
       #       要临时关掉兑换请填 `GLADOS_EXCHANGE_PLAN=none`（脚本认这个值）。
+      #
+      #    TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 是**单行**，只在签到失败时发提醒：
+      #    两个都配齐才生效，缺一个就只打日志、不发送。
       COOKIES:                ${{ inputs.COOKIES || secrets.COOKIES }}
       PUSHDEER_SENDKEY:       ${{ inputs.PUSHDEER_SENDKEY || secrets.PUSHDEER_SENDKEY }}
+      TELEGRAM_BOT_TOKEN:     ${{ inputs.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:       ${{ inputs.TELEGRAM_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
       DOMAINS:                ${{ inputs.DOMAINS || vars.DOMAINS }}
       GLADOS_EXCHANGE_PLAN:   ${{ inputs.GLADOS_EXCHANGE_PLAN || vars.GLADOS_EXCHANGE_PLAN }}
       GLADOS_VERBOSE:         ${{ inputs.GLADOS_VERBOSE || vars.GLADOS_VERBOSE }}
@@ -113,6 +128,8 @@ jobs:
       # 默认【整体跳过】自检；只有这里为真值时才执行，并输出明文便于排查。
       #   DEBUG_MODE          当前 Environment 的开关：只调试本项目时设它
       #   COMMON_DEBUG_MODE   仓库级全局开关：所有项目一起打开
+      # ⚠️ 在 glados_checkin 里它们还控制 Telegram 提醒：开启后无论成败都会发送（见项目 README）。
+      #    必须放【Variables】—— 上面桥接的是 vars，放成 Secrets 会读不到、开关静默失效。
       # 未设置 → 展开为空字符串 → 脚本按「回落到另一级 / 跳过」处理。
       # ⚠️ 这两行必须存在：脚本只认进程环境变量，GitHub 上的 Variables 靠这两行桥接，
       #    漏了就会出现「在 GitHub 设了开关但没生效」。
@@ -123,7 +140,7 @@ jobs:
       #   SECRET_NAMES   → 只输出 HMAC 指纹（值不可见，永不打印明文）
       #   VARIABLE_NAMES → 输出明文值
       # 这份清单同时给 report-inputs.sh 用：在里面且被 ref 传入的项会打 ::warning::
-      SECRET_NAMES:   "COOKIES PUSHDEER_SENDKEY"
+      SECRET_NAMES:   "COOKIES PUSHDEER_SENDKEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID"
       VARIABLE_NAMES: "DOMAINS GLADOS_EXCHANGE_PLAN GLADOS_VERBOSE"
 
     steps:

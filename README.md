@@ -58,7 +58,7 @@ GitHub 自带的定时任务不准、还会被自动停用，所以改用**外�
 
 | 项目 | 语言 | 做什么 | 建议调度频率 |
 |---|---|---|---|
-| [`glados_checkin`](python/glados_checkin/README.md) | Python | GLaDOS / Railgun 自动签到（多域名多账号），可选自动兑换套餐 | 每天 1~2 次 |
+| [`glados_checkin`](python/glados_checkin/README.md) | Python | GLaDOS / Railgun 自动签到（多域名多账号），可选自动兑换套餐，失败 Telegram 提醒 | 每天 1~2 次 |
 | [`api_checkin`](python/api_checkin/README.md) | Python | new-api / one-api 站点签到（多站点多账号，cookie 或访问令牌） | 每天 1~2 次 |
 | [`oracle-abc`](python/oracle-abc/README.md) | Python | 抢 Oracle Cloud 的免费 Ampere A1 实例，抢到后分步升级到目标规格 | 每 1~5 分钟 |
 
@@ -190,6 +190,8 @@ Environment 的作用是**把不同任务的真凭据隔离开** —— 签到�
 |---|---|---|
 | `COOKIES` | ✅ | 你的账号 Cookie，**每行一个**，和 `DOMAINS` 按行一一对应 |
 | `PUSHDEER_SENDKEY` | 选填 | 推送密钥，不填就只输出日志、不推送 |
+| `TELEGRAM_BOT_TOKEN` | 选填 | Telegram Bot Token，**签到失败时**发提醒；与 `TELEGRAM_CHAT_ID` 两个都填才生效 |
+| `TELEGRAM_CHAT_ID` | 选填 | Telegram 接收提醒的会话 ID；同上，两个都填才生效 |
 
 **Cookie 怎么拿**（`COOKIES` 的值）：
 

@@ -119,6 +119,21 @@ def register_masks(values: List[str]) -> None:
             print(f"::add-mask::{value}", flush=True)
 
 
+def detect_debug_mode() -> Tuple[bool, str]:
+    """两级调试开关，判定与 common/check-secrets.sh 保持一致。
+
+    DEBUG_MODE（Environment 级）非空就以它为准（哪怕值是 false，也不回落）；
+    否则回落 COMMON_DEBUG_MODE（仓库级）。真值：true / 1 / yes / on（大小写不敏感）。
+
+    用途：开启后无论签到成败都会发送 Telegram 提醒，方便验证提醒通道。
+    """
+    for name in ("DEBUG_MODE", "COMMON_DEBUG_MODE"):
+        raw = os.environ.get(name)
+        if raw:  # 非空即「已设置」（与 check-secrets.sh 的 [ -n ] 一致）
+            return raw.lower() in ("true", "1", "yes", "on"), name
+    return False, ""
+
+
 class Config:
     """应用配置"""
 
@@ -450,6 +465,7 @@ class CheckinResult:
     points_total: str = "None"
     exchange: str = "未兑换"
     code: CheckinStatus = CheckinStatus.FAILURE  # 0: 成功, 1: 重复, -2: 失败
+    message: str = ""  # 服务端返回的原始 message（失败原因），用于失败提醒
 
     def to_dict(self) -> Dict[str, Union[str, CheckinStatus]]:
         result_dict = asdict(self)
@@ -476,6 +492,84 @@ class PushService:
         except Exception as e:
             logger.error(f"{LogEmoji.ERROR} 发送推送通知失败: {e}")
             return False
+
+
+class TelegramNotifier:
+    """Telegram Bot 失败提醒。
+
+    与 PushService（每次运行都推完整结果）不同：**只在失败时调用**，
+    成功 / 重复签到不打扰。token 与 chat_id 未配置时跳过并打日志，
+    不影响签到本身。
+    """
+
+    ENV_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
+    ENV_CHAT_ID = "TELEGRAM_CHAT_ID"
+    API_TEMPLATE = "https://api.telegram.org/bot{token}/sendMessage"
+
+    def __init__(self):
+        self.bot_token: str = (os.environ.get(self.ENV_BOT_TOKEN) or "").strip()
+        self.chat_id: str = (os.environ.get(self.ENV_CHAT_ID) or "").strip()
+
+    @property
+    def configured(self) -> bool:
+        """两个键都非空才算配置好 —— 缺任何一个都发不出去。"""
+        return bool(self.bot_token and self.chat_id)
+
+    def _scrub(self, text: str) -> str:
+        """抹掉文本里的 bot token。
+
+        requests 抛出的异常消息会带上完整 URL（其中含 token），
+        直接打进日志等于泄露，所以输出前先替换掉。
+        """
+        if self.bot_token:
+            text = text.replace(self.bot_token, "***")
+        return text
+
+    def send(self, title: str, content: str) -> bool:
+        """发送提醒"""
+        if not self.configured:
+            logger.warning(
+                f"{LogEmoji.WARNING} 未设置 {self.ENV_BOT_TOKEN} / {self.ENV_CHAT_ID}，跳过 Telegram 失败提醒。"
+            )
+            return False
+
+        url = self.API_TEMPLATE.format(token=self.bot_token)
+        text = f"{title}\n\n{content}" if content else title
+        # 不用 parse_mode：消息里的 # / [ ] 等字符在 MarkdownV2 下会解析失败，
+        # 失败提醒要的是「一定送得到」，纯文本最稳。
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+
+        try:
+            response = requests.post(url, json=payload, timeout=(60, 120))
+        except requests.exceptions.RequestException as e:
+            logger.error(f"{LogEmoji.ERROR} 发送 Telegram 失败提醒时发生网络错误: {self._scrub(str(e))}")
+            return False
+
+        if not response.ok:
+            logger.error(
+                f"{LogEmoji.ERROR} 发送 Telegram 失败提醒失败，状态码 {response.status_code}。"
+                f"响应内容: {self._scrub(response.text)}"
+            )
+            return False
+
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+
+        if not data.get("ok", False):
+            logger.error(
+                f"{LogEmoji.ERROR} 发送 Telegram 失败提醒失败: "
+                f"{self._scrub(str(data.get('description') or response.text))}"
+            )
+            return False
+
+        logger.info(f"{LogEmoji.SUCCESS} Telegram 失败提醒发送成功。")
+        return True
 
 
 class Checker:
@@ -527,6 +621,7 @@ class Checker:
             checkin_result = api.checkin(cookie)
             result.status = checkin_result["status"]
             result.code = checkin_result.get("code", CheckinStatus.FAILURE)
+            result.message = str(checkin_result.get("message", ""))
 
             # 3. 获取积分
             self._log(cookie_idx, domain, LogEmoji.POINTS, "查询总积分")
@@ -552,6 +647,37 @@ class Checker:
     def get_results(self) -> List[Dict[str, str]]:
         """获取所有结果"""
         return [result.to_dict() for result in self.results]
+
+    def has_failure(self) -> bool:
+        """是否存在签到失败（重复签到不算失败）"""
+        return any(result.code == CheckinStatus.FAILURE for result in self.results)
+
+    def format_failure_alert(self) -> Tuple[str, str]:
+        """格式化失败提醒（仅失败时使用）：标题 + 失败账号明细。
+
+        与 format_results 的推送内容不同：这里只列失败账号，并带上服务端返回的
+        message（如「请先登录」），让提醒本身就能看出失败原因。
+        """
+        results = self.get_results()
+        failed = [r for r in results if r["code"] == CheckinStatus.FAILURE]
+
+        success_count = sum(1 for r in results if r["code"] == CheckinStatus.SUCCESS)
+        repeat_count = sum(1 for r in results if r["code"] == CheckinStatus.REPEAT)
+
+        title = f"{LogEmoji.FAIL} GLaDOS 签到失败（失败 {len(failed)} / 共 {len(results)}）"
+
+        lines = [
+            f"成功 {success_count} / 失败 {len(failed)} / 重复 {repeat_count}",
+            "",
+            "失败明细：",
+        ]
+        for res in failed:
+            detail = f"#{res['cookie_index']} [{res['domain']}] {res['status']}"
+            if res.get("message"):
+                detail += f"：{res['message']}"
+            lines.append(detail)
+
+        return title, "\n".join(lines)
 
     def format_results(self) -> Tuple[str, str, str]:
         """格式化结果"""
@@ -588,6 +714,10 @@ logger = init_logger("glados_checkin")
 def main():
     """主函数"""
     config: Optional[Config] = None
+    failed = False
+    # 失败提醒的默认文案：任何未走到「全部成功」的路径都会把它发出去
+    alert_title = f"{LogEmoji.FAIL} GLaDOS 签到失败"
+    alert_content = ""
 
     try:
         # 1. 加载配置
@@ -600,6 +730,9 @@ def main():
         if not config.accounts:
             logger.error(f"{LogEmoji.ERROR} 未找到有效的 Cookie, 退出程序。")
             title, content = "# 未找到 cookies!", ""
+            failed = True
+            alert_title = f"{LogEmoji.FAIL} GLaDOS 签到未找到有效的 Cookie"
+            alert_content = "DOMAINS / COOKIES 为空或行数不匹配，本次没有执行任何签到，请检查配置。"
         else:
             # 2. 执行签到
             logger.info(f"{LogEmoji.START} 步骤 2: 执行签到")
@@ -611,9 +744,16 @@ def main():
             title, content, log_content = checker.format_results()
             logger.info(f"\n{LogEmoji.END}========== 签到总结 ==========\n{title}\n{log_content}")
 
+            failed = checker.has_failure()
+            if failed:
+                alert_title, alert_content = checker.format_failure_alert()
+
     except Exception as e:
         logger.error(f"{LogEmoji.ERROR} 主程序执行过程中发生未预期的错误: {e}")
+        failed = True
         title, content, log_content = "# 脚本执行出错", str(e), str(e)
+        alert_title = f"{LogEmoji.FAIL} GLaDOS 签到脚本执行出错"
+        alert_content = str(e)
 
     # 4. 发送推送
     #    Config() 本身失败时（比如域名与 Cookie 行数不一致）没有可用的 config，
@@ -623,6 +763,24 @@ def main():
         PushService(config).send(title, content)
     else:
         logger.error(f"{LogEmoji.ERROR} 配置未成功加载，跳过推送（原因见上方日志）。")
+
+    # 5. 失败时发送 Telegram 提醒
+    #    成功 / 重复签到不发 —— 这个通道只用来「有事叫我」，配了 token + chat_id 才生效。
+    #    DEBUG_MODE 开启时例外：无论成败都发，方便验证提醒通道本身通不通。
+    logger.info(f"{LogEmoji.START} 步骤 5: Telegram 提醒")
+    debug_enabled, debug_source = detect_debug_mode()
+    if debug_enabled:
+        logger.info(f"{LogEmoji.INFO} {debug_source} 已开启：无论成败都会发送 Telegram 提醒。")
+    if failed:
+        TelegramNotifier().send(alert_title, alert_content)
+    elif debug_enabled:
+        TelegramNotifier().send(
+            f"{LogEmoji.SUCCESS} GLaDOS 签到完成（{debug_source} 已开启，无论成败都会发送）",
+            content,
+        )
+    else:
+        logger.info(f"{LogEmoji.SUCCESS} 本次没有签到失败，跳过 Telegram 提醒。")
+
     logger.info(f"{LogEmoji.END} 签到完成")
 
 

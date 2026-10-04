@@ -1,6 +1,6 @@
 # glados_checkin
 
-GLaDOS / Railgun 自动签到，支持多域名多账号、可选自动兑换、结果推送。
+GLaDOS / Railgun 自动签到，支持多域名多账号、可选自动兑换、结果推送（PushDeer）、失败提醒（Telegram）。
 
 > **本文件只讲这个项目自己的东西** —— 要配哪些名字、业务流程、专属的坑。
 >
@@ -40,6 +40,8 @@ GLaDOS / Railgun 自动签到，支持多域名多账号、可选自动兑换、
 |---|---|---|
 | `COOKIES` | ✅ | 账号 Cookie，**每行一个**，与 `DOMAINS` 按行一一对应 |
 | `PUSHDEER_SENDKEY` | 选填 | 不填则跳过推送，仅输出日志 |
+| `TELEGRAM_BOT_TOKEN` | 选填 | Telegram Bot Token，**签到失败时**发提醒；与 `TELEGRAM_CHAT_ID` **两个都填**才生效 |
+| `TELEGRAM_CHAT_ID` | 选填 | Telegram 接收提醒的会话 ID；同上，两个都填才生效 |
 
 ### Environment variables
 
@@ -108,7 +110,9 @@ Cookie 值本身含有 `;` `:` `=` `/`（见 `koa:sess=xxx; koa:sess.sig=yyy`）
    3. GET  /api/user/points     查询总积分
    4. POST /api/user/exchange   仅在配置了 GLADOS_EXCHANGE_PLAN 时才执行
         ↓
-汇总所有任务结果 → 推送 PushDeer
+汇总所有任务结果 → 推送 PushDeer（配了密钥才推）
+        ↓
+有任何失败 → Telegram 失败提醒（配了 token + chat_id 才发；全部成功/重复不发）
 ```
 
 **接口细节**（路径对两个域名一致，域名取自 `DOMAINS` 的对应行）：
@@ -158,6 +162,41 @@ Cookie 通过请求头 `cookie` 传递，超时设置为连接 60 秒 / 读取 1
 
 #1 [glados.cloud] P:10 剩余:180 天 总积分:2100 积分 | 签到成功 | 兑换成功: plan500
 ```
+
+### 失败提醒（Telegram）
+
+与 PushDeer（每次运行都推完整结果）不同，Telegram 通道**只在失败时打扰**：
+
+| 情况 | 是否发送 |
+|---|---|
+| 有账号签到失败（`code = -2`） | ✅ 发送，附失败账号明细 + 服务端返回的 message |
+| 重复签到（`code = 1`） | ❌ 不发 —— 这是正常结果，不是失败 |
+| 全部成功 | ❌ 不发 |
+| 脚本出错 / 没找到有效 Cookie | ✅ 发送，附错误信息 |
+
+配置：`TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID` **两个都填**才生效，缺一个就只打日志、
+不发送（和 PushDeer 未配置时的行为一致）。两个值都放 Environment secrets。
+
+> 🔧 **调试开关**：`DEBUG_MODE`（Environment 级）或 `COMMON_DEBUG_MODE`（仓库级）为真值时，
+> **无论成败都会发送** —— 成功时发完整汇总，用来验证提醒通道本身通不通。
+> 判定规则与 `common/check-secrets.sh` 一致：`DEBUG_MODE` 非空就以它为准（填 `false`
+> 可单独关掉），真值 = `true` / `1` / `yes` / `on`。
+> 开关放 **Variables**（Environment 或仓库级都行），**不是 Secrets** —— workflow 桥接的是 `vars.*`，
+> 放成 Secrets 会读不到、开关静默失效。
+
+消息示例（纯文本，不解析 Markdown）：
+
+```
+❌ GLaDOS 签到失败（失败 1 / 共 2）
+
+成功 1 / 失败 1 / 重复 0
+
+失败明细：
+#2 [railgun.info] 签到失败：请先登录
+```
+
+> 用 `@BotFather` 建 bot 拿 token；给 bot 发一条消息后，用 `getUpdates` 或
+> `@userinfobot` 拿 chat_id。脚本走 `sendMessage` 发送。
 
 ---
 
@@ -234,6 +273,18 @@ railgun.info     cookie3
 > ⚠️ **多域名时兑换策略要自己拿主意**：配了 `plan500` 之后，**每个「域名 + 账号」任务都会各兑换一次**。
 > 如果 `glados.cloud` 和 `railgun.info` 背后是同一个账号、同一份积分，那就是重复兑换。
 > 建议先只在一个域名上开兑换，确认两个站点的积分是不是同一份再决定。
+
+### Telegram 没收到失败提醒
+
+按顺序检查：
+
+1. **本次到底有没有失败** —— 全部成功 / 重复签到**不会**发提醒，这是设计行为
+2. `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID` 是否**两个都**配置了（只配一个不发）
+3. 在日志里搜 `Telegram`，按出现的内容判断：
+   - `跳过 Telegram 失败提醒` → 配置没生效。检查是不是放错 Environment、或 workflow 引用前缀写错
+   - `Telegram 失败提醒发送成功` → 发出去了，去 Telegram 里看
+   - `发送 Telegram 失败提醒失败` → 后面跟的报错就是原因（chat_id 填错最常见：bot 没权限给该会话发消息）
+4. 想验证通道本身通不通：把 `DEBUG_MODE` 设为 `true` 跑一次 —— 无论成败都会发送，不用故意制造失败
 
 ### 怎么验证配置真的生效了
 
