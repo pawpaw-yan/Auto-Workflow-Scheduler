@@ -4,6 +4,8 @@ import os
 import re
 import sys
 import logging
+import hashlib
+import time
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
@@ -18,6 +20,10 @@ sys.path.insert(0, _HERE)                   # 项目自身
 
 from common.dotenv import load_dotenv  # noqa: E402
 from common.logging_config import init_logger  # noqa: E402
+
+
+DEFAULT_CHECKIN_TOKEN = "glados.cloud"
+CHALLENGE_SALT = "glados-observe-v1"
 
 
 class CheckinStatus(Enum):
@@ -39,6 +45,7 @@ class ExchangePlan(Enum):
 class APIEndpoint(Enum):
     """API端点"""
 
+    CHALLENGE = "/api/user/checkin/challenge"
     CHECKIN = "/api/user/checkin"
     STATUS = "/api/user/status"
     POINTS = "/api/user/points"
@@ -142,6 +149,8 @@ class Config:
     ENV_DOMAINS = "DOMAINS"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
+    ENV_CHECKIN_TOKEN = "GLADOS_CHECKIN_TOKEN"
+    ENV_CHALLENGE_SALT = "GLADOS_CHALLENGE_SALT"
 
     """不兑换：GLADOS_EXCHANGE_PLAN 留空即表示明确不兑换"""
     NO_EXCHANGE = ""
@@ -166,6 +175,8 @@ class Config:
 
     def __init__(self):
         self.push_key: str = ""
+        self.checkin_token: str = DEFAULT_CHECKIN_TOKEN
+        self.challenge_salt: str = CHALLENGE_SALT
         # [(域名, cookie), ...]：两个配置项按行一一对应
         self.accounts: List[Tuple[str, str]] = []
         self.exchange_plan: str = self.NO_EXCHANGE
@@ -179,12 +190,17 @@ class Config:
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
+        checkin_token_env: Optional[str] = os.environ.get(self.ENV_CHECKIN_TOKEN)
+        challenge_salt_env: Optional[str] = os.environ.get(self.ENV_CHALLENGE_SALT)
 
         if not push_key_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_PUSH_KEY}' 未设置。")
             self.push_key = ""
         else:
             self.push_key = push_key_env
+
+        self.checkin_token = (checkin_token_env or DEFAULT_CHECKIN_TOKEN).strip() or DEFAULT_CHECKIN_TOKEN
+        self.challenge_salt = (challenge_salt_env or CHALLENGE_SALT).strip() or CHALLENGE_SALT
 
         # ── 域名与 Cookie：按行一一对应 ──
         # 域名用「空白 / 逗号」切分（域名里不可能出现这些字符）；
@@ -237,6 +253,8 @@ class Config:
         for idx, (domain, _cookie) in enumerate(self.accounts, 1):
             logger.info(f"{LogEmoji.INFO}   #{idx} {LogEmoji.DOMAIN} {domain}")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}。")
+        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_CHECKIN_TOKEN}: {self.checkin_token}。")
+        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_CHALLENGE_SALT}: {self.challenge_salt}。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan or '（不兑换）'}。")
 
         if verbose_env is not None:
@@ -255,6 +273,7 @@ class API:
     """API 调用"""
 
     CHECKIN_URL = APIEndpoint.CHECKIN.value
+    CHALLENGE_URL = APIEndpoint.CHALLENGE.value
     STATUS_URL = APIEndpoint.STATUS.value
     POINTS_URL = APIEndpoint.POINTS.value
     EXCHANGE_URL = APIEndpoint.EXCHANGE.value
@@ -292,7 +311,9 @@ class API:
         """获取请求头"""
         return {
             "origin": f"https://{self.domain}",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36",
+            "referer": f"https://{self.domain}/console/checkin",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+            "accept": "application/json, text/plain, */*",
         }
 
     def _log(self, level: str, emoji: str, message: str, force: bool = False) -> None:
@@ -312,14 +333,28 @@ class API:
         """获取完整 URL"""
         return f"https://{self.domain}{path}"
 
-    def _make_request(self, url: str, method: str, data: Optional[Dict] = None, cookies: str = "") -> Optional[requests.Response]:
+    def _make_request(
+        self,
+        url: str,
+        method: str,
+        data: Optional[Dict] = None,
+        cookies: str = "",
+        json_body: bool = False,
+    ) -> Optional[requests.Response]:
         """发送 HTTP 请求"""
         session_headers = self.headers.copy()
-        session_headers["cookie"] = cookies
+        if cookies:
+            session_headers["cookie"] = cookies
+        if json_body:
+            session_headers["Content-Type"] = "application/json;charset=UTF-8"
+            session_headers["Accept"] = "application/json, text/plain, */*"
 
         try:
             if method.upper() == "POST":
-                response = self.session.post(url, headers=session_headers, data=data, timeout=(60, 120))
+                if json_body:
+                    response = self.session.post(url, headers=session_headers, json=data, timeout=(60, 120))
+                else:
+                    response = self.session.post(url, headers=session_headers, data=data, timeout=(60, 120))
             elif method.upper() == "GET":
                 response = self.session.get(url, headers=session_headers, timeout=(60, 120))
             else:
@@ -334,16 +369,55 @@ class API:
             self._log("error", LogEmoji.ERROR, f"向 {url} 发起请求时发生网络错误: {e}", force=True)
             return None
 
-    def _get_checkin_data(self) -> Dict[str, str]:
-        """获取签到数据"""
-        return {"token": self.domain}
+    def _get_checkin_data(
+        self,
+        nonce: Optional[str] = None,
+        token: str = DEFAULT_CHECKIN_TOKEN,
+        challenge_salt: str = CHALLENGE_SALT,
+    ) -> Dict[str, str]:
+        """获取签到数据，遵循 Bot Challenge 的 nonce + proof 流程。"""
+        data: Dict[str, str] = {"token": token}
+        if nonce:
+            data["nonce"] = nonce
+            proof = hashlib.sha256(f"{nonce}.{challenge_salt}".encode("utf-8")).hexdigest()
+            data["proof"] = proof
+        return data
 
     @log_method
-    def checkin(self, cookies: str) -> Dict[str, Union[str, CheckinStatus]]:
-        """执行签到"""
+    def checkin(
+        self,
+        cookies: str,
+        token: str = DEFAULT_CHECKIN_TOKEN,
+        challenge_salt: str = CHALLENGE_SALT,
+    ) -> Dict[str, Union[str, CheckinStatus]]:
+        """执行签到：先获取 challenge nonce，再按 work.txt 流程计算 proof 并提交签到。"""
         url = self._get_full_url(self.CHECKIN_URL)
-        checkin_data = self._get_checkin_data()
-        response = self._make_request(url, "POST", checkin_data, cookies)
+        challenge_url = self._get_full_url(self.CHALLENGE_URL)
+
+        # 1. 获取挑战 nonce
+        challenge_response = self._make_request(challenge_url, "GET", cookies=cookies)
+        if not challenge_response:
+            self._log("warning", LogEmoji.WARNING, "获取签到 challenge 失败，跳过签到。", force=True)
+            return {"status": "签到失败", "points": "0", "message": "获取 nonce 失败", "code": CheckinStatus.FAILURE}
+
+        try:
+            challenge_data = challenge_response.json()
+        except ValueError:
+            self._log("warning", LogEmoji.WARNING, "挑战接口返回不是有效 JSON。", force=True)
+            return {"status": "签到失败", "points": "0", "message": "挑战接口响应异常", "code": CheckinStatus.FAILURE}
+
+        nonce = challenge_data.get("nonce") or challenge_data.get("data", {}).get("nonce")
+        if not nonce:
+            message = challenge_data.get("message", "未获取到 nonce")
+            self._log("warning", LogEmoji.WARNING, f"挑战接口未返回 nonce: {message}", force=True)
+            return {"status": "签到失败", "points": "0", "message": str(message), "code": CheckinStatus.FAILURE}
+
+        self._log("info", LogEmoji.INFO, f"获取 challenge nonce: {nonce}")
+        time.sleep(2.6)
+
+        # 2. 构造 proof 并提交签到
+        checkin_data = self._get_checkin_data(nonce=nonce, token=token, challenge_salt=challenge_salt)
+        response = self._make_request(url, "POST", checkin_data, cookies, json_body=True)
 
         result = {
             "status": "签到失败",
@@ -435,7 +509,7 @@ class API:
     def exchange(self, cookies: str, plan: str, required_points: int) -> str:
         """执行兑换"""
         url = self._get_full_url(self.EXCHANGE_URL)
-        response = self._make_request(url, "POST", {"planType": plan}, cookies)
+        response = self._make_request(url, "POST", {"planType": plan}, cookies, json_body=True)
 
         if response:
             data = response.json()
@@ -516,7 +590,7 @@ class TelegramNotifier:
         return bool(self.bot_token and self.chat_id)
 
     def _scrub(self, text: str) -> str:
-        """抹掉文本里的 bot token。
+        """抹掉文本里的 bot token.
 
         requests 抛出的异常消息会带上完整 URL（其中含 token），
         直接打进日志等于泄露，所以输出前先替换掉。
@@ -616,9 +690,9 @@ class Checker:
             days_str, status_code = api.get_status(cookie)
             result.days = days_str
 
-            # 2. 签到
+            # 2. 签到（按 work.txt 的 Bot Challenge 流程）
             self._log(cookie_idx, domain, LogEmoji.CHECKIN, "执行签到")
-            checkin_result = api.checkin(cookie)
+            checkin_result = api.checkin(cookie, token=self.config.checkin_token, challenge_salt=self.config.challenge_salt)
             result.status = checkin_result["status"]
             result.code = checkin_result.get("code", CheckinStatus.FAILURE)
             result.message = str(checkin_result.get("message", ""))
@@ -742,7 +816,8 @@ def main():
             # 3. 格式化结果
             logger.info(f"{LogEmoji.START} 步骤 3: 格式化结果")
             title, content, log_content = checker.format_results()
-            logger.info(f"\n{LogEmoji.END}========== 签到总结 ==========\n{title}\n{log_content}")
+            logger.info(f"\n{LogEmoji.END}========== 签到总结 ==========" +
+                        f"\n{title}\n{log_content}")
 
             failed = checker.has_failure()
             if failed:
